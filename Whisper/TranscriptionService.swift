@@ -9,16 +9,40 @@ class TranscriptionService {
     
     init() {
         // Load API key from Config.plist
-        if let path = Bundle.main.path(forResource: "Config", ofType: "plist"),
-           let config = NSDictionary(contentsOfFile: path),
-           let key = config["OpenAIAPIKey"] as? String,
-           key != "YOUR_API_KEY_HERE" && !key.isEmpty {
-            self.apiKey = key
-            print("✅ API key loaded successfully from Config.plist")
+        print("🔍 Attempting to load API key from Config.plist...")
+        
+        if let path = Bundle.main.path(forResource: "Config", ofType: "plist") {
+            print("✅ Found Config.plist at: \(path)")
+            
+            if let config = NSDictionary(contentsOfFile: path) {
+                print("✅ Successfully loaded Config.plist")
+                
+                if let key = config["OpenAIAPIKey"] as? String {
+                    print("✅ Found OpenAIAPIKey in Config.plist")
+                    
+                    if key != "YOUR_API_KEY_HERE" && !key.isEmpty {
+                        self.apiKey = key
+                        print("✅ API key loaded successfully: \(String(key.prefix(10)))...")
+                    } else {
+                        self.apiKey = "YOUR_API_KEY_HERE"
+                        print("⚠️  API key is placeholder or empty")
+                    }
+                } else {
+                    self.apiKey = "YOUR_API_KEY_HERE"
+                    print("❌ OpenAIAPIKey not found in Config.plist")
+                }
+            } else {
+                self.apiKey = "YOUR_API_KEY_HERE"
+                print("❌ Failed to load Config.plist as NSDictionary")
+            }
         } else {
-            // Fallback for development - you should set this in Config.plist
             self.apiKey = "YOUR_API_KEY_HERE"
-            print("⚠️  Warning: API key not found or not configured in Config.plist")
+            print("❌ Config.plist not found in app bundle")
+            print("   Make sure Config.plist is added to the Xcode project")
+        }
+        
+        if self.apiKey == "YOUR_API_KEY_HERE" {
+            print("⚠️  Warning: API key not properly configured")
             print("   Please add your OpenAI API key to Whisper/Config.plist")
             print("   The app will use local speech recognition as fallback")
         }
