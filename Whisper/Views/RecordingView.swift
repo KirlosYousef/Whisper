@@ -4,6 +4,7 @@ import SwiftData
 struct RecordingView: View {
     @Environment(\.modelContext) private var modelContext
     @StateObject private var viewModel: RecordingViewModel
+    @State private var ringPulse = false
     
     init() {
         let context = try! ModelContext(
@@ -28,8 +29,17 @@ struct RecordingView: View {
                     }
                 }) {
                     ZStack {
+                        // Continuously animated pulsing ring when recording
+                        if viewModel.isRecording {
+                            Circle()
+                                .stroke(Color.accentColor.opacity(0.4), lineWidth: 8)
+                                .frame(width: 110, height: 110)
+                                .scaleEffect(ringPulse ? 1.18 : 0.95)
+                                .opacity(ringPulse ? 0.7 : 0.3)
+                                .animation(Animation.easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: ringPulse)
+                        }
                         Circle()
-                            .fill(viewModel.isRecording ? Color.red : Color.green)
+                            .fill(viewModel.isRecording ? Color.red : Color.accentColor)
                             .frame(width: 80, height: 80)
                             .scaleEffect(viewModel.isRecording ? 1.2 : 1.0)
                             .animation(.easeInOut(duration: 0.2), value: viewModel.isRecording)
@@ -38,6 +48,16 @@ struct RecordingView: View {
                             .font(.system(size: 36, weight: .bold))
                             .scaleEffect(viewModel.isRecording ? 1.2 : 1.0)
                             .animation(.spring(), value: viewModel.isRecording)
+                    }
+                }
+                .onAppear {
+                    if viewModel.isRecording { ringPulse = true }
+                }
+                .onChange(of: viewModel.isRecording) { isRec in
+                    if isRec {
+                        ringPulse = true
+                    } else {
+                        ringPulse = false
                     }
                 }
                 .padding()
@@ -57,40 +77,61 @@ struct RecordingView: View {
                 List {
                     ForEach(groupedRecordings.keys.sorted(by: >), id: \.self) { date in
                         Section(header: Text(sectionHeader(for: date))) {
-                            ForEach(groupedRecordings[date] ?? []) { recording in
-                                VStack(alignment: .leading, spacing: 8) {
+                            ForEach(Array((groupedRecordings[date] ?? []).enumerated()), id: \.element.id) { idx, recording in
+                                VStack(alignment: .leading, spacing: 10) {
                                     HStack {
-                                        Text(recording.createdAt, style: .time)
+                                        Text("Record \(idx + 1)")
+                                            .font(.headline)
+                                            .foregroundColor(.primary)
                                         Spacer()
                                         Text(durationString(recording.duration))
                                             .foregroundColor(.secondary)
                                     }
+                                    Divider()
                                     // Show transcription segments for this recording
                                     if let segments = fetchSegments(for: recording), !segments.isEmpty {
                                         ForEach(segments, id: \.id) { segment in
                                             HStack(alignment: .top, spacing: 8) {
-                                                Text(segmentLabel(segment))
+                                                Text("[\(segmentLabel(segment))]")
                                                     .font(.caption)
-                                                    .foregroundColor(.gray)
+                                                    .foregroundColor(.secondary)
                                                 if segment.status == "completed" {
                                                     Text(segment.text)
                                                         .font(.caption)
-                                                } else if segment.status == "pending" {
+                                                        .foregroundColor(.primary)
+                                                } else if segment.status == "pending" || segment.status == "processing" {
                                                     ProgressView()
                                                         .scaleEffect(0.7)
+                                                    Text("Processing…")
+                                                        .font(.caption2)
+                                                        .foregroundColor(.accentColor)
                                                 } else if segment.status == "failed" {
                                                     Image(systemName: "exclamationmark.triangle.fill")
                                                         .foregroundColor(.red)
                                                         .font(.caption)
                                                     Text("Failed")
-                                                        .font(.caption)
+                                                        .font(.caption2)
                                                         .foregroundColor(.red)
+                                                } else if segment.status == "queued" {
+                                                    Image(systemName: "icloud.slash")
+                                                        .foregroundColor(.orange)
+                                                        .font(.caption)
+                                                    Text("Queued (offline)")
+                                                        .font(.caption2)
+                                                        .foregroundColor(.orange)
                                                 }
                                             }
                                         }
                                     }
                                 }
-                                .padding(.vertical, 4)
+                                .padding()
+                                .background(Color(.systemBackground))
+                                .cornerRadius(16)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 16)
+                                        .stroke(Color.gray.opacity(0.12), lineWidth: 1)
+                                )
+                                .padding(.vertical, 8)
                             }
                         }
                     }

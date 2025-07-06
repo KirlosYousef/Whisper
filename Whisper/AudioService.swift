@@ -51,7 +51,8 @@ class AudioService: NSObject, AVAudioRecorderDelegate {
             recordingStartTime = Date()
             // Start or restart timer
             segmentTimer?.invalidate()
-            segmentTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: false) { [weak self] _ in
+            // TODO: Change back to 30
+            segmentTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: false) { [weak self] _ in
                 self?.finishCurrentSegmentAndStartNew()
             }
             completion?(true, currentFilePath)
