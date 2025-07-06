@@ -21,10 +21,10 @@ struct RecordingView: View {
                 interruptionView
                 networkStatusView
                 recordingsListView
-                Spacer()
             }
             .navigationTitle("Whisper Recorder")
             .searchable(text: $viewModel.searchText, prompt: "Search transcriptions...")
+            .ignoresSafeArea(.container, edges: .bottom)
         }
         .onAppear {
             viewModel.fetchRecordings()
@@ -162,6 +162,7 @@ struct RecordingView: View {
         .refreshable {
             viewModel.refreshRecordings()
         }
+        .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
     }
     
     // MARK: - Recording Row

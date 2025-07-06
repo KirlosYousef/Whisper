@@ -14,10 +14,17 @@ This app requires an OpenAI API key for audio transcription functionality.
    - Replace `YOUR_API_KEY_HERE` with your actual API key
    - Save the file
 
-3. **Important Security Notes**
-   - The `Config.plist` file is already added to `.gitignore` to prevent it from being committed to version control
-   - Never commit your actual API key to the repository
-   - If you accidentally commit a secret, follow the instructions in the main README to remove it from git history
+3. **Build and Test**
+   - Clean build folder in Xcode (Product → Clean Build Folder)
+   - Build and run the app
+   - Check console output for: `✅ API key loaded successfully`
+
+## Security Features
+
+- **Secure Storage**: API key is stored in `Config.plist` which is excluded from git
+- **Fallback Mode**: If API key is missing, app uses local speech recognition
+- **No Hardcoding**: API key is never hardcoded in source code
+- **Environment Isolation**: Each developer can have their own API key
 
 ## Example Config.plist
 
@@ -34,7 +41,26 @@ This app requires an OpenAI API key for audio transcription functionality.
 
 ## Troubleshooting
 
-If you see a warning message about the API key not being found, make sure:
-1. The `Config.plist` file exists in the `Whisper` folder
-2. The API key is properly set in the file
-3. The file is included in your Xcode project bundle 
+### API Key Not Found
+If you see: `❌ Config.plist not found in app bundle`
+- Make sure `Config.plist` is added to Xcode project
+- Clean and rebuild the project
+
+### API Key Not Loading
+If you see: `⚠️ API key not properly configured`
+- Check that the API key in `Config.plist` is not `YOUR_API_KEY_HERE`
+- Verify the API key starts with `sk-`
+- Ensure no extra characters or spaces
+
+### Fallback Mode
+If API key is not configured, the app will:
+- Use local speech recognition (SFSpeechRecognizer)
+- Work offline but with lower accuracy
+- Show warning messages in console
+
+## Best Practices
+
+- **Never commit API keys** to version control
+- **Use different keys** for development and production
+- **Rotate keys regularly** for security
+- **Monitor usage** in OpenAI dashboard 
