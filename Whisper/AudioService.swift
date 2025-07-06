@@ -103,6 +103,26 @@ class AudioService: NSObject {
         NotificationCenter.default.removeObserver(self)
     }
     
+    private func hasSufficientDiskSpace() -> Bool {
+        let fileManager = FileManager.default
+        guard let path = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first else {
+            return false
+        }
+        
+        do {
+            let attributes = try fileManager.attributesOfFileSystem(forPath: path.path)
+            if let freeSpace = attributes[.systemFreeSize] as? NSNumber {
+                let freeSpaceInMB = freeSpace.doubleValue / (1024 * 1024)
+                // Require at least 100MB free space
+                return freeSpaceInMB > 100
+            }
+        } catch {
+            print("Error checking disk space: \(error)")
+        }
+        
+        return false
+    }
+    
     func requestPermission(completion: @escaping (Bool) -> Void) {
         recordingSession.requestRecordPermission { granted in
             completion(granted)
@@ -110,6 +130,12 @@ class AudioService: NSObject {
     }
     
     func startRecording(completion: @escaping (Bool, String?) -> Void) {
+        // Check available disk space before starting
+        if !hasSufficientDiskSpace() {
+            completion(false, "Insufficient disk space. Please free up some space and try again.")
+            return
+        }
+        
         segmentIndex = 0
         segmentStartTime = 0
         startNewSegment(completion: completion)

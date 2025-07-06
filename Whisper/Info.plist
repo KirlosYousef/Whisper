@@ -6,5 +6,7 @@
 	<array>
 		<string>audio</string>
 	</array>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>This app uses speech recognition to transcribe audio recordings when the online service is unavailable.</string>
 </dict>
 </plist>

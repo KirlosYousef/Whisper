@@ -19,28 +19,31 @@ struct RecordingView: View {
                 recordButton
                 errorMessageView
                 interruptionView
+                networkStatusView
                 recordingsListView
                 Spacer()
             }
             .navigationTitle("Whisper Recorder")
+            .searchable(text: $viewModel.searchText, prompt: "Search transcriptions...")
         }
         .onAppear {
             viewModel.fetchRecordings()
+            viewModel.checkNetworkStatus()
         }
     }
     
     // MARK: - Record Button
     private var recordButton: some View {
-        Button(action: {
-            if viewModel.isRecording {
-                viewModel.stopRecording()
-            } else {
-                viewModel.requestPermission()
-                if !viewModel.permissionDenied {
-                    viewModel.startRecording()
-                }
-            }
-        }) {
+                        Button(action: {
+                    if viewModel.isRecording {
+                        viewModel.stopRecording()
+                    } else {
+                        viewModel.requestPermission()
+                        if !viewModel.permissionDenied {
+                            viewModel.startRecording()
+                        }
+                    }
+                }) {
             ZStack {
                 // Audio level responsive ring when recording
                 if viewModel.isRecording {
@@ -64,6 +67,9 @@ struct RecordingView: View {
             }
         }
         .padding()
+        .accessibilityLabel(viewModel.isRecording ? "Stop Recording" : "Start Recording")
+        .accessibilityHint(viewModel.isRecording ? "Double tap to stop recording" : "Double tap to start recording")
+        .accessibilityValue(viewModel.isRecording ? "Recording in progress" : "Ready to record")
         .alert(isPresented: $viewModel.showPermissionAlert) {
             Alert(
                 title: Text("Microphone Access Denied"),
@@ -118,6 +124,29 @@ struct RecordingView: View {
         }
     }
     
+    // MARK: - Network Status View
+    private var networkStatusView: some View {
+        Group {
+            if !viewModel.isOnline {
+                HStack {
+                    Image(systemName: "wifi.slash")
+                        .foregroundColor(.orange)
+                    Text("Offline Mode")
+                        .font(.subheadline)
+                        .foregroundColor(.orange)
+                    Spacer()
+                    Text("Transcriptions will be queued")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .padding()
+                .background(Color.orange.opacity(0.1))
+                .cornerRadius(12)
+                .padding(.horizontal)
+            }
+        }
+    }
+    
     // MARK: - Recordings List
     private var recordingsListView: some View {
         List {
@@ -130,6 +159,9 @@ struct RecordingView: View {
             }
         }
         .listStyle(InsetGroupedListStyle())
+        .refreshable {
+            viewModel.refreshRecordings()
+        }
     }
     
     // MARK: - Recording Row
@@ -211,7 +243,7 @@ struct RecordingView: View {
     
     // MARK: - Helper Methods
     private var groupedRecordings: [Date: [Recording]] {
-        Dictionary(grouping: viewModel.recordings) { rec in
+        Dictionary(grouping: viewModel.filteredRecordings) { rec in
             Calendar.current.startOfDay(for: rec.createdAt)
         }
     }

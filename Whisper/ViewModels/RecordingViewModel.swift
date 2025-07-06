@@ -14,6 +14,9 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     @Published var audioLevel: Float = 0.0
     @Published var isInterrupted = false
     @Published var interruptionMessage: String? = nil
+    @Published var isOnline = true
+    @Published var isRefreshing = false
+    @Published var searchText = ""
     
     private var audioService: AudioService
     private var modelContext: ModelContext
@@ -101,20 +104,32 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         self.modelContext.insert(segment)
         try? self.modelContext.save()
         self.fetchRecordings()
-        // Start transcription
-        self.transcriptionService.transcribe(audioURL: url, segmentStart: startTime, duration: duration) { [weak self] text, error in
-            DispatchQueue.main.async {
-                if let error = error {
-                    segment.status = "failed"
-                    segment.text = ""
-                    self?.errorMessage = "Transcription failed: \(error.localizedDescription)"
-                } else if let text = text {
-                    segment.status = "completed"
-                    segment.text = text
+        // Check if we're online before attempting transcription
+        if self.isOnline {
+            // Start transcription
+            self.transcriptionService.transcribe(audioURL: url, segmentStart: startTime, duration: duration) { [weak self] text, error in
+                DispatchQueue.main.async {
+                    if let error = error {
+                        if let transcriptionError = error as? TranscriptionError, transcriptionError == .noNetwork {
+                            segment.status = "queued"
+                        } else {
+                            segment.status = "failed"
+                            self?.errorMessage = "Transcription failed: \(error.localizedDescription)"
+                        }
+                        segment.text = ""
+                    } else if let text = text {
+                        segment.status = "completed"
+                        segment.text = text
+                    }
+                    try? self?.modelContext.save()
+                    self?.fetchRecordings()
                 }
-                try? self?.modelContext.save()
-                self?.fetchRecordings()
             }
+        } else {
+            // Queue for later processing
+            segment.status = "queued"
+            try? self.modelContext.save()
+            self.fetchRecordings()
         }
     }
     
@@ -123,6 +138,75 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         if let fetched = try? modelContext.fetch(descriptor) {
             self.recordings = fetched
         }
+    }
+    
+    func refreshRecordings() {
+        isRefreshing = true
+        fetchRecordings()
+        processQueuedTranscriptions()
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            self.isRefreshing = false
+        }
+    }
+    
+    func processQueuedTranscriptions() {
+        let descriptor = FetchDescriptor<TranscriptionSegment>(
+            predicate: #Predicate<TranscriptionSegment> { segment in
+                segment.status == "queued"
+            }
+        )
+        
+        if let queuedSegments = try? modelContext.fetch(descriptor) {
+            for segment in queuedSegments {
+                if let recording = segment.recording {
+                    let audioURL = URL(fileURLWithPath: recording.filePath)
+                    transcriptionService.transcribe(
+                        audioURL: audioURL,
+                        segmentStart: segment.timestamp,
+                        duration: 30.0
+                    ) { [weak self] text, error in
+                        DispatchQueue.main.async {
+                            if let error = error {
+                                segment.status = "failed"
+                                segment.text = ""
+                                self?.errorMessage = "Transcription failed: \(error.localizedDescription)"
+                            } else if let text = text {
+                                segment.status = "completed"
+                                segment.text = text
+                            }
+                            try? self?.modelContext.save()
+                            self?.fetchRecordings()
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    func checkNetworkStatus() {
+        // This would typically use a proper network monitoring library
+        // For now, we'll use a simple check
+        isOnline = true // Placeholder - implement proper network monitoring
+    }
+    
+    var filteredRecordings: [Recording] {
+        if searchText.isEmpty {
+            return recordings
+        } else {
+            return recordings.filter { recording in
+                // Search in transcription segments
+                let segments = fetchSegments(for: recording) ?? []
+                return segments.contains { segment in
+                    segment.text.localizedCaseInsensitiveContains(searchText)
+                }
+            }
+        }
+    }
+    
+    private func fetchSegments(for recording: Recording) -> [TranscriptionSegment]? {
+        guard let allSegments = try? modelContext.fetch(FetchDescriptor<TranscriptionSegment>()) else { return nil }
+        return allSegments.filter { $0.recording?.id == recording.id }
     }
 }
 
