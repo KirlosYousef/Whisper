@@ -18,6 +18,7 @@ struct RecordingView: View {
                 Spacer()
                 recordButton
                 errorMessageView
+                interruptionView
                 recordingsListView
                 Spacer()
             }
@@ -80,6 +81,39 @@ struct RecordingView: View {
                     .foregroundColor(.red)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal)
+            }
+        }
+    }
+    
+    // MARK: - Interruption View
+    private var interruptionView: some View {
+        Group {
+            if viewModel.isInterrupted {
+                VStack(spacing: 8) {
+                    HStack {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundColor(.orange)
+                        Text("Recording Interrupted")
+                            .font(.headline)
+                            .foregroundColor(.orange)
+                    }
+                    
+                    if let message = viewModel.interruptionMessage {
+                        Text(message)
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+                    
+                    Text("Recording will resume automatically when possible")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .padding()
+                .background(Color.orange.opacity(0.1))
+                .cornerRadius(12)
+                .padding(.horizontal)
             }
         }
     }

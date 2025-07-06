@@ -14,7 +14,7 @@ class TranscriptionService {
         var body = Data()
         // file
         let filename = audioURL.lastPathComponent
-        let mimetype = "audio/m4a"
+        let mimetype = "audio/wav"
         if let fileData = try? Data(contentsOf: audioURL) {
             body.append("--\(boundary)\r\n".data(using: .utf8)!)
             body.append("Content-Disposition: form-data; name=\"file\"; filename=\"\(filename)\"\r\n".data(using: .utf8)!)

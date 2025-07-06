@@ -12,6 +12,8 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     @Published var showPermissionAlert = false
     @Published var errorMessage: String? = nil
     @Published var audioLevel: Float = 0.0
+    @Published var isInterrupted = false
+    @Published var interruptionMessage: String? = nil
     
     private var audioService: AudioService
     private var modelContext: ModelContext
@@ -24,11 +26,6 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         self.transcriptionService = TranscriptionService()
         fetchRecordings()
         audioService.delegate = self
-        audioService.observeInterruptionNotifications(onPause: { [weak self] in
-            self?.pauseRecording()
-        }, onStop: { [weak self] in
-            self?.stopRecording()
-        })
     }
     
     func requestPermission() {
@@ -70,6 +67,20 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     func audioService(_ service: AudioService, didUpdateAudioLevel level: Float) {
         DispatchQueue.main.async {
             self.audioLevel = level
+        }
+    }
+    
+    func audioService(_ service: AudioService, didInterruptRecording reason: String) {
+        DispatchQueue.main.async {
+            self.isInterrupted = true
+            self.interruptionMessage = reason
+        }
+    }
+    
+    func audioService(_ service: AudioService, didResumeRecording: Bool) {
+        DispatchQueue.main.async {
+            self.isInterrupted = false
+            self.interruptionMessage = nil
         }
     }
     

@@ -5,6 +5,8 @@ import AVFoundation
 protocol AudioServiceDelegate: AnyObject {
     func audioService(_ service: AudioService, didFinishSegment url: URL, duration: TimeInterval, startTime: TimeInterval)
     func audioService(_ service: AudioService, didUpdateAudioLevel level: Float)
+    func audioService(_ service: AudioService, didInterruptRecording reason: String)
+    func audioService(_ service: AudioService, didResumeRecording: Bool)
 }
 
 class AudioService: NSObject {
@@ -18,11 +20,87 @@ class AudioService: NSObject {
     private var segmentStartTime: TimeInterval = 0
     private var audioFile: AVAudioFile?
     private var isRecording = false
+    private var isPaused = false
+    private var wasInterrupted = false
     weak var delegate: AudioServiceDelegate?
     
     override init() {
         super.init()
         recordingSession = AVAudioSession.sharedInstance()
+        setupAudioSessionNotifications()
+    }
+    
+    private func setupAudioSessionNotifications() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleInterruption),
+            name: AVAudioSession.interruptionNotification,
+            object: recordingSession
+        )
+        
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleRouteChange),
+            name: AVAudioSession.routeChangeNotification,
+            object: recordingSession
+        )
+    }
+    
+    @objc private func handleInterruption(notification: Notification) {
+        guard let userInfo = notification.userInfo,
+              let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: typeValue) else {
+            return
+        }
+        
+        switch type {
+        case .began:
+            if isRecording && !isPaused {
+                pauseRecording()
+                wasInterrupted = true
+                delegate?.audioService(self, didInterruptRecording: "Audio session interrupted")
+            }
+        case .ended:
+            guard let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt else { return }
+            let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
+            
+            if options.contains(.shouldResume) && wasInterrupted {
+                resumeRecording()
+                wasInterrupted = false
+                delegate?.audioService(self, didResumeRecording: true)
+            }
+        @unknown default:
+            break
+        }
+    }
+    
+    @objc private func handleRouteChange(notification: Notification) {
+        guard let userInfo = notification.userInfo,
+              let reasonValue = userInfo[AVAudioSessionRouteChangeReasonKey] as? UInt,
+              let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue) else {
+            return
+        }
+        
+        switch reason {
+        case .oldDeviceUnavailable:
+            if isRecording && !isPaused {
+                pauseRecording()
+                wasInterrupted = true
+                delegate?.audioService(self, didInterruptRecording: "Audio device disconnected")
+            }
+        case .newDeviceAvailable:
+            if wasInterrupted {
+                resumeRecording()
+                wasInterrupted = false
+                delegate?.audioService(self, didResumeRecording: true)
+            }
+        default:
+            break
+        }
+    }
+    
+    deinit {
+        NotificationCenter.default.removeObserver(self)
     }
     
     func requestPermission(completion: @escaping (Bool) -> Void) {
@@ -80,8 +158,7 @@ class AudioService: NSObject {
             
             // Start or restart timer
             segmentTimer?.invalidate()
-            // TODO: Change back to 30
-            segmentTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: false) { [weak self] _ in
+            segmentTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: false) { [weak self] _ in
                 self?.finishCurrentSegmentAndStartNew()
             }
             
@@ -144,6 +221,21 @@ class AudioService: NSObject {
         isRecording = false
         inputNode?.removeTap(onBus: 0)
         audioEngine?.pause()
+        isPaused = true
+    }
+    
+    func resumeRecording() {
+        guard isPaused else { return }
+        
+        do {
+            try recordingSession.setActive(true)
+            audioEngine?.prepare()
+            try audioEngine?.start()
+            isRecording = true
+            isPaused = false
+        } catch {
+            print("Failed to resume recording: \(error)")
+        }
     }
     
     func stopRecording(completion: @escaping (TimeInterval?, String?) -> Void) {
@@ -171,27 +263,7 @@ class AudioService: NSObject {
         isRecording = false
     }
     
-    // MARK: - Interruption Handling
-    func observeInterruptionNotifications(onPause: @escaping () -> Void, onStop: @escaping () -> Void) {
-        NotificationCenter.default.addObserver(forName: AVAudioSession.interruptionNotification, object: recordingSession, queue: .main) { notification in
-            guard let userInfo = notification.userInfo,
-                  let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
-                  let type = AVAudioSession.InterruptionType(rawValue: typeValue) else { return }
-            if type == .began {
-                onPause()
-            } else if type == .ended {
-                // Optionally resume
-            }
-        }
-        NotificationCenter.default.addObserver(forName: AVAudioSession.routeChangeNotification, object: recordingSession, queue: .main) { notification in
-            guard let userInfo = notification.userInfo,
-                  let reasonValue = userInfo[AVAudioSessionRouteChangeReasonKey] as? UInt,
-                  let reason = AVAudioSession.RouteChangeReason(rawValue:reasonValue) else { return }
-            if reason == .oldDeviceUnavailable {
-                onStop()
-            }
-        }
-    }
+
 }
 #endif
 
