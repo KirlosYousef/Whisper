@@ -2,12 +2,23 @@ import Foundation
 import Speech
 
 class TranscriptionService {
-    private let apiKey = " "
+    private let apiKey: String
     private let endpoint = URL(string: "https://api.openai.com/v1/audio/transcriptions")!
     private let maxRetries = 5
     private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
     
     init() {
+        // Load API key from Config.plist
+        if let path = Bundle.main.path(forResource: "Config", ofType: "plist"),
+           let config = NSDictionary(contentsOfFile: path),
+           let key = config["OpenAIAPIKey"] as? String {
+            self.apiKey = key
+        } else {
+            // Fallback for development - you should set this in Config.plist
+            self.apiKey = "YOUR_API_KEY_HERE"
+            print("Warning: API key not found in Config.plist. Please add your OpenAI API key to Config.plist")
+        }
+        
         requestSpeechRecognitionPermission()
     }
     

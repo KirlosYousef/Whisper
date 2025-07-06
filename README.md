@@ -53,11 +53,10 @@ A production-quality iOS application for recording, transcribing, and managing a
    ```
 
 3. **Configure API Key**
-   - Open `TranscriptionService.swift`
-   - Replace the `apiKey` constant with your OpenAI API key:
-   ```swift
-   private let apiKey = "your-openai-api-key-here"
-   ```
+   - See `API_SETUP.md` for detailed instructions
+   - Open `Whisper/Config.plist`
+   - Replace `YOUR_API_KEY_HERE` with your OpenAI API key
+   - The API key is now stored securely and won't be committed to version control
 
 4. **Build and Run**
    - Select your target device or simulator
