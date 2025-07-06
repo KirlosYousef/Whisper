@@ -11,12 +11,16 @@ class TranscriptionService {
         // Load API key from Config.plist
         if let path = Bundle.main.path(forResource: "Config", ofType: "plist"),
            let config = NSDictionary(contentsOfFile: path),
-           let key = config["OpenAIAPIKey"] as? String {
+           let key = config["OpenAIAPIKey"] as? String,
+           key != "YOUR_API_KEY_HERE" && !key.isEmpty {
             self.apiKey = key
+            print("✅ API key loaded successfully from Config.plist")
         } else {
             // Fallback for development - you should set this in Config.plist
             self.apiKey = "YOUR_API_KEY_HERE"
-            print("Warning: API key not found in Config.plist. Please add your OpenAI API key to Config.plist")
+            print("⚠️  Warning: API key not found or not configured in Config.plist")
+            print("   Please add your OpenAI API key to Whisper/Config.plist")
+            print("   The app will use local speech recognition as fallback")
         }
         
         requestSpeechRecognitionPermission()
@@ -56,6 +60,12 @@ class TranscriptionService {
     }
     
     private func transcribeWithOpenAI(audioURL: URL, completion: @escaping (String?, Error?) -> Void) {
+        // Check if API key is properly configured
+        guard apiKey != "YOUR_API_KEY_HERE" && !apiKey.isEmpty else {
+            completion(nil, TranscriptionError.apiKeyNotConfigured)
+            return
+        }
+        
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
@@ -156,6 +166,7 @@ enum TranscriptionError: LocalizedError {
     case serverError
     case invalidResponse
     case fallbackUnavailable
+    case apiKeyNotConfigured
     
     var errorDescription: String? {
         switch self {
@@ -169,6 +180,8 @@ enum TranscriptionError: LocalizedError {
             return "Invalid response from server"
         case .fallbackUnavailable:
             return "Local transcription not available"
+        case .apiKeyNotConfigured:
+            return "OpenAI API key not configured. Please add your API key to Config.plist"
         }
     }
 }
