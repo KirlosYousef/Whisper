@@ -12,7 +12,7 @@ import SwiftData
 struct WhisperApp: App {
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
-            Item.self,
+            Recording.self,
         ])
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
 
@@ -25,7 +25,7 @@ struct WhisperApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            RecordingView()
         }
         .modelContainer(sharedModelContainer)
     }
