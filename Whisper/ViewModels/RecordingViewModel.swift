@@ -2,6 +2,7 @@ import Foundation
 import AVFoundation
 import SwiftData
 import Combine
+import SwiftUI
 
 class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     @Published var isRecording = false
@@ -10,6 +11,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     @Published var permissionDenied = false
     @Published var showPermissionAlert = false
     @Published var errorMessage: String? = nil
+    @Published var audioLevel: Float = 0.0
     
     private var audioService: AudioService
     private var modelContext: ModelContext
@@ -65,6 +67,12 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     }
     
     // MARK: - AudioServiceDelegate
+    func audioService(_ service: AudioService, didUpdateAudioLevel level: Float) {
+        DispatchQueue.main.async {
+            self.audioLevel = level
+        }
+    }
+    
     func audioService(_ service: AudioService, didFinishSegment url: URL, duration: TimeInterval, startTime: TimeInterval) {
         // Find or create the parent Recording for this session
         let rec: Recording
