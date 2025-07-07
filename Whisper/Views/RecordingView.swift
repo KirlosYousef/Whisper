@@ -23,8 +23,25 @@ struct RecordingView: View {
                 recordingsListView
             }
             .navigationTitle("Whisper Recorder")
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(role: .destructive) {
+                        viewModel.showClearConfirmation = true
+                    } label: {
+                        Label("Clear All", systemImage: "trash")
+                    }
+                }
+            }
             .searchable(text: $viewModel.searchText, prompt: "Search transcriptions...")
             .ignoresSafeArea(.container, edges: .bottom)
+            .alert("Clear All Recordings?", isPresented: $viewModel.showClearConfirmation) {
+                Button("Delete All", role: .destructive) {
+                    viewModel.clearAllRecordings()
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This will permanently delete all recordings and their transcriptions. This action cannot be undone.")
+            }
         }
         .onAppear {
             viewModel.fetchRecordings()
@@ -169,7 +186,7 @@ struct RecordingView: View {
     private func recordingRow(recording: Recording, index: Int) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("Record \(index + 1)")
+                Text(recording.title?.isEmpty == false ? recording.title! : "Record \(index + 1)")
                     .font(.headline)
                     .foregroundColor(.primary)
                 Spacer()
@@ -249,7 +266,7 @@ struct RecordingView: View {
             if let segments = fetchSegments(for: recording), !segments.isEmpty {
                 ForEach(segments, id: \.id) { segment in
                     HStack(alignment: .top, spacing: 8) {
-                        Text("[\(segmentLabel(segment))]")
+                        Text("\(segmentLabel(segment))")
                             .font(.caption)
                             .foregroundColor(.secondary)
                         segmentStatusView(segment: segment)

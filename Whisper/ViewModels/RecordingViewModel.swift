@@ -17,6 +17,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     @Published var isOnline = true
     @Published var isRefreshing = false
     @Published var searchText = ""
+    @Published var showClearConfirmation = false
     
     private var audioService: AudioService
     private var modelContext: ModelContext
@@ -50,7 +51,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                     self.isRecording = true
                     self.isPaused = false
                     // Create a new Recording for this session
-                    let rec = Recording(duration: 0, filePath: filePath ?? UUID().uuidString)
+                    let rec = Recording(duration: 0, filePath: filePath ?? UUID().uuidString, title: nil)
                     self.modelContext.insert(rec)
                     self.activeRecording = rec
                     self.recordings.insert(rec, at: 0)
@@ -70,6 +71,17 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                 self.isRecording = false
                 self.isPaused = false
                 // Clear the active recording when session ends
+                if let rec = self.activeRecording {
+                    Task {
+                        let transcript = rec.fullTranscript
+                        if !transcript.isEmpty {
+                            let (summary, _) = await SummaryService.generateShortSummary(for: transcript)
+                            rec.summary = summary
+                            try? self.modelContext.save()
+                            self.fetchRecordings()
+                        }
+                    }
+                }
                 self.activeRecording = nil
             }
             // The last segment will be handled by the delegate callback
@@ -134,6 +146,17 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                     } else if let text = text {
                         segment.status = "completed"
                         segment.text = text
+                        // Set the title as soon as the first segment is completed and title is not set
+                        if rec.title == nil && !text.isEmpty {
+                            Task {
+                                let (shortTitle, _) = await SummaryService.generateShortSummary(for: text)
+                                DispatchQueue.main.async {
+                                    rec.title = shortTitle
+                                    try? self?.modelContext.save()
+                                    self?.fetchRecordings()
+                                }
+                            }
+                        }
                     }
                     try? self?.modelContext.save()
                     self?.fetchRecordings()
@@ -221,6 +244,17 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     private func fetchSegments(for recording: Recording) -> [TranscriptionSegment]? {
         guard let allSegments = try? modelContext.fetch(FetchDescriptor<TranscriptionSegment>()) else { return nil }
         return allSegments.filter { $0.recording?.id == recording.id }
+    }
+    
+    func clearAllRecordings() {
+        let descriptor = FetchDescriptor<Recording>()
+        if let allRecordings = try? modelContext.fetch(descriptor) {
+            for rec in allRecordings {
+                modelContext.delete(rec)
+            }
+            try? modelContext.save()
+            fetchRecordings()
+        }
     }
 }
 

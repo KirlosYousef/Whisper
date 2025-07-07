@@ -63,6 +63,21 @@ public class SummaryService {
         return (summary, todos)
     }
     
+    public static func generateShortSummary(for transcript: String) async -> (summary: String, todos: [String]) {
+        // Use OpenAI API if key is configured
+        if shared.apiKey != "YOUR_API_KEY_HERE" && !transcript.isEmpty {
+            do {
+                let summary = try await shared.summarizeShortWithOpenAI(transcript: transcript)
+                return (summary, [])
+            } catch {
+                print("SummaryService: OpenAI API failed, error: \(error)")
+            }
+        }
+        // Fallback
+        let summary = String(transcript.prefix(20))
+        return (summary, [])
+    }
+    
     private func summarizeWithOpenAI(transcript: String) async throws -> (String, [String]) {
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
@@ -109,6 +124,40 @@ public class SummaryService {
             // Fallback: just return the content as summary, no todos
             return (content, [])
         }
+    }
+    
+    private func summarizeShortWithOpenAI(transcript: String) async throws -> String {
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let prompt = "Summarize the following transcript in 2 or 3 words that best describe what it's about. Only return the 2 or 3 word summary, nothing else.\n\nTranscript:\n\n\(transcript)"
+        let body: [String: Any] = [
+            "model": model,
+            "messages": [
+                ["role": "system", "content": "You are a helpful assistant that summarizes transcripts in 2 or 3 words."],
+                ["role": "user", "content": prompt]
+            ],
+            "temperature": 0.3,
+            "max_tokens": 12
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+            throw NSError(domain: "SummaryService", code: 1, userInfo: [NSLocalizedDescriptionKey: "OpenAI API error"])
+        }
+        struct OpenAIResponse: Decodable {
+            struct Choice: Decodable {
+                struct Message: Decodable {
+                    let content: String
+                }
+                let message: Message
+            }
+            let choices: [Choice]
+        }
+        let decoded = try JSONDecoder().decode(OpenAIResponse.self, from: data)
+        let content = decoded.choices.first?.message.content.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return content
     }
     
     private static func formatDuration(_ duration: TimeInterval) -> String {

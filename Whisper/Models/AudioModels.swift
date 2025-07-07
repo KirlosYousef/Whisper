@@ -9,13 +9,15 @@ final class Recording: Identifiable {
     var filePath: String
     var summary: String?
     var todoList: [String]?
+    var title: String?
     @Relationship(deleteRule: .cascade, inverse: \TranscriptionSegment.recording) var segments: [TranscriptionSegment] = []
     
-    init(id: UUID = UUID(), createdAt: Date = Date(), duration: TimeInterval, filePath: String) {
+    init(id: UUID = UUID(), createdAt: Date = Date(), duration: TimeInterval, filePath: String, title: String? = nil) {
         self.id = id
         self.createdAt = createdAt
         self.duration = duration
         self.filePath = filePath
+        self.title = title
     }
     
     var sortedSegments: [TranscriptionSegment] {
