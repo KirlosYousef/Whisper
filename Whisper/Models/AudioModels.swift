@@ -7,6 +7,8 @@ final class Recording: Identifiable {
     var createdAt: Date
     var duration: TimeInterval
     var filePath: String
+    var summary: String?
+    var todoList: [String]?
     @Relationship(deleteRule: .cascade, inverse: \TranscriptionSegment.recording) var segments: [TranscriptionSegment] = []
     
     init(id: UUID = UUID(), createdAt: Date = Date(), duration: TimeInterval, filePath: String) {
@@ -14,6 +16,17 @@ final class Recording: Identifiable {
         self.createdAt = createdAt
         self.duration = duration
         self.filePath = filePath
+    }
+    
+    var sortedSegments: [TranscriptionSegment] {
+        segments.sorted { $0.timestamp < $1.timestamp }
+    }
+    
+    var fullTranscript: String {
+        sortedSegments
+            .filter { $0.status == "completed" }
+            .map { $0.text }
+            .joined(separator: " ")
     }
 }
 

@@ -173,9 +173,63 @@ struct RecordingView: View {
                     .font(.headline)
                     .foregroundColor(.primary)
                 Spacer()
+                
+                Menu {
+                    Button(action: {
+                        Task {
+                            let (summary, todos) = await SummaryService.generateSummary(for: recording.fullTranscript)
+                            recording.summary = summary
+                            recording.todoList = todos
+                            try? modelContext.save()
+                        }
+                    }) {
+                        Label("Generate Summary", systemImage: "text.badge.star")
+                    }
+                    
+                    Button(action: {
+                        SummaryService.shareRecording(recording)
+                    }) {
+                        Label("Share", systemImage: "square.and.arrow.up")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .foregroundColor(.accentColor)
+                }
+                .padding(.horizontal, 8)
+                
                 Text(durationString(recording.duration))
                     .foregroundColor(.secondary)
             }
+            
+            if let summary = recording.summary {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Summary")
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                    Text(summary)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .padding(.vertical, 4)
+            }
+            
+            if let todos = recording.todoList, !todos.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Action Items")
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                    ForEach(todos, id: \.self) { todo in
+                        HStack(alignment: .top) {
+                            Text("•")
+                            Text(todo)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+            
             Divider()
             transcriptionSegmentsView(for: recording)
         }
@@ -282,4 +336,3 @@ struct RecordingView: View {
 #Preview {
     RecordingView()
 }
-

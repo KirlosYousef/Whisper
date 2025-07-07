@@ -68,13 +68,13 @@ class TranscriptionService {
     
     private func transcribeWithRetry(audioURL: URL, retryCount: Int, completion: @escaping (String?, Error?) -> Void) {
         transcribeWithOpenAI(audioURL: audioURL) { [weak self] text, error in
-            if let error = error, retryCount < self?.maxRetries ?? 0 {
+            if let _ = error, retryCount < self?.maxRetries ?? 0 {
                 // Exponential backoff: wait 2^retryCount seconds
                 let delay = TimeInterval(pow(2.0, Double(retryCount)))
                 DispatchQueue.global().asyncAfter(deadline: .now() + delay) {
                     self?.transcribeWithRetry(audioURL: audioURL, retryCount: retryCount + 1, completion: completion)
                 }
-            } else if let error = error {
+            } else if let _ = error {
                 // Max retries reached, try fallback
                 self?.transcribeWithFallback(audioURL: audioURL, completion: completion)
             } else {

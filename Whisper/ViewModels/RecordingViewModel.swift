@@ -23,6 +23,9 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     private var transcriptionService: TranscriptionService
     private var cancellables = Set<AnyCancellable>()
     
+    // Track the current active recording during a session
+    private var activeRecording: Recording? = nil
+    
     init(modelContext: ModelContext) {
         self.modelContext = modelContext
         self.audioService = AudioService()
@@ -46,6 +49,11 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                 DispatchQueue.main.async {
                     self.isRecording = true
                     self.isPaused = false
+                    // Create a new Recording for this session
+                    let rec = Recording(duration: 0, filePath: filePath ?? UUID().uuidString)
+                    self.modelContext.insert(rec)
+                    self.activeRecording = rec
+                    self.recordings.insert(rec, at: 0)
                 }
             }
         }
@@ -61,6 +69,8 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
             DispatchQueue.main.async {
                 self.isRecording = false
                 self.isPaused = false
+                // Clear the active recording when session ends
+                self.activeRecording = nil
             }
             // The last segment will be handled by the delegate callback
         }
@@ -88,15 +98,19 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     }
     
     func audioService(_ service: AudioService, didFinishSegment url: URL, duration: TimeInterval, startTime: TimeInterval) {
-        // Find or create the parent Recording for this session
-        let rec: Recording
-        if let last = self.recordings.first, last.filePath == url.path {
-            rec = last
-        } else {
-            rec = Recording(duration: 0, filePath: url.path)
-            self.modelContext.insert(rec)
-            // Insert at front for UI ordering
-            self.recordings.insert(rec, at: 0)
+        // Always use the activeRecording for this session
+        guard let rec = self.activeRecording else {
+            // Fallback: create a new Recording if something went wrong
+            let fallback = Recording(duration: 0, filePath: url.path)
+            self.modelContext.insert(fallback)
+            self.recordings.insert(fallback, at: 0)
+            self.activeRecording = fallback
+            fallback.duration += duration
+            let segment = TranscriptionSegment(text: "", status: "processing", timestamp: startTime, recording: fallback)
+            self.modelContext.insert(segment)
+            try? self.modelContext.save()
+            self.fetchRecordings()
+            return
         }
         // Update duration
         rec.duration += duration
