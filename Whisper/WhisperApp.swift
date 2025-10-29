@@ -13,6 +13,7 @@ struct WhisperApp: App {
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
             Recording.self,
+            TranscriptionSegment.self,
         ])
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
 
@@ -25,7 +26,8 @@ struct WhisperApp: App {
 
     var body: some Scene {
         WindowGroup {
-            RecordingView()
+            let viewModel = RecordingViewModel(modelContext: sharedModelContainer.mainContext)
+            RecordingView(viewModel: viewModel)
         }
         .modelContainer(sharedModelContainer)
     }

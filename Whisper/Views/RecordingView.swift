@@ -5,11 +5,8 @@ struct RecordingView: View {
     @Environment(\.modelContext) private var modelContext
     @StateObject private var viewModel: RecordingViewModel
     
-    init() {
-        let context = try! ModelContext(
-            ModelContainer(for: Recording.self)
-        )
-        _viewModel = StateObject(wrappedValue: RecordingViewModel(modelContext: context))
+    init(viewModel: RecordingViewModel) {
+        _viewModel = StateObject(wrappedValue: viewModel)
     }
     
     var body: some View {
@@ -351,5 +348,8 @@ struct RecordingView: View {
 }
 
 #Preview {
-    RecordingView()
+    let container = try! ModelContainer(for: Recording.self)
+    let context = ModelContext(container)
+    let vm = RecordingViewModel(modelContext: context)
+    return RecordingView(viewModel: vm)
 }

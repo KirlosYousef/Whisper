@@ -69,8 +69,10 @@ class TranscriptionService {
     private func transcribeWithRetry(audioURL: URL, retryCount: Int, completion: @escaping (String?, Error?) -> Void) {
         transcribeWithOpenAI(audioURL: audioURL) { [weak self] text, error in
             if let _ = error, retryCount < self?.maxRetries ?? 0 {
-                // Exponential backoff: wait 2^retryCount seconds
-                let delay = TimeInterval(pow(2.0, Double(retryCount)))
+                // Exponential backoff with jitter: wait 2^retryCount + random(0,0.5)s
+                let base = TimeInterval(pow(2.0, Double(retryCount)))
+                let jitter = Double.random(in: 0...0.5)
+                let delay = min(30.0, base + jitter)
                 DispatchQueue.global().asyncAfter(deadline: .now() + delay) {
                     self?.transcribeWithRetry(audioURL: audioURL, retryCount: retryCount + 1, completion: completion)
                 }
@@ -110,7 +112,11 @@ class TranscriptionService {
         // model
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
         body.append("Content-Disposition: form-data; name=\"model\"\r\n\r\n".data(using: .utf8)!)
-        body.append("whisper-1\r\n".data(using: .utf8)!)
+        body.append("gpt-4o-mini-transcribe\r\n".data(using: .utf8)!)
+        // optional language hint
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"language\"\r\n\r\n".data(using: .utf8)!)
+        body.append("en\r\n".data(using: .utf8)!)
         // response_format
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
         body.append("Content-Disposition: form-data; name=\"response_format\"\r\n\r\n".data(using: .utf8)!)
@@ -133,6 +139,18 @@ class TranscriptionService {
                 } else if httpResponse.statusCode >= 500 {
                     completion(nil, TranscriptionError.serverError)
                     return
+                } else if httpResponse.statusCode >= 400 {
+                    // Try to parse error message from body
+                    if let data = data,
+                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                       let err = json["error"] as? [String: Any],
+                       let message = err["message"] as? String {
+                        completion(nil, NSError(domain: "TranscriptionService", code: httpResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: message]))
+                        return
+                    } else {
+                        completion(nil, TranscriptionError.invalidResponse)
+                        return
+                    }
                 }
             }
             

@@ -9,7 +9,7 @@ public class SummaryService {
     private static let shared = SummaryService()
     private let apiKey: String
     private let endpoint = URL(string: "https://api.openai.com/v1/chat/completions")!
-    private let model = "gpt-3.5-turbo" // cheapest available model
+    private let model = "gpt-4o-mini" // current small, cost-effective model
     
     private init() {
         // Load API key from Config.plist (same as TranscriptionService)
@@ -85,7 +85,7 @@ public class SummaryService {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         
         let prompt = """
-        Summarize the following transcript in a concise paragraph. Then, extract any action items or todo points as a bullet list. If there are no action items, return an empty list.\n\nTranscript:\n\n\(transcript)\n\nReturn the result as a JSON object with keys 'summary' and 'todos' (where 'todos' is a list of strings).
+        You are a precise assistant. Read the transcript and produce STRICT JSON with keys 'summary' (string) and 'todos' (array of strings). Do not include any extra keys or prose.\n\nTranscript:\n\n\(transcript)
         """
         let body: [String: Any] = [
             "model": model,
@@ -94,7 +94,8 @@ public class SummaryService {
                 ["role": "user", "content": prompt]
             ],
             "temperature": 0.3,
-            "max_tokens": 512
+            "max_tokens": 512,
+            "response_format": ["type": "json_object"]
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         

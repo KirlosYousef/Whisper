@@ -3,6 +3,29 @@ import AVFoundation
 import SwiftData
 import Combine
 import SwiftUI
+import Network
+
+class NetworkMonitor {
+    static let shared = NetworkMonitor()
+    private let monitor = NWPathMonitor()
+    private let queue = DispatchQueue(label: "NetworkMonitor")
+    private(set) var isOnline: Bool = true
+    var onStatusChange: ((Bool) -> Void)?
+
+    private init() {
+        monitor.pathUpdateHandler = { [weak self] path in
+            let online = path.status == .satisfied
+            guard let self = self else { return }
+            if self.isOnline != online {
+                self.isOnline = online
+                DispatchQueue.main.async {
+                    self.onStatusChange?(online)
+                }
+            }
+        }
+        monitor.start(queue: queue)
+    }
+}
 
 class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     @Published var isRecording = false
@@ -23,6 +46,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     private var modelContext: ModelContext
     private var transcriptionService: TranscriptionService
     private var cancellables = Set<AnyCancellable>()
+    private let networkMonitor = NetworkMonitor.shared
     
     // Track the current active recording during a session
     private var activeRecording: Recording? = nil
@@ -33,6 +57,15 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         self.transcriptionService = TranscriptionService()
         fetchRecordings()
         audioService.delegate = self
+        // Observe network status changes
+        networkMonitor.onStatusChange = { [weak self] online in
+            guard let self = self else { return }
+            self.isOnline = online
+            if online {
+                self.processQueuedTranscriptions()
+            }
+        }
+        self.isOnline = networkMonitor.isOnline
     }
     
     func requestPermission() {
@@ -118,7 +151,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
             self.recordings.insert(fallback, at: 0)
             self.activeRecording = fallback
             fallback.duration += duration
-            let segment = TranscriptionSegment(text: "", status: "processing", timestamp: startTime, recording: fallback)
+            let segment = TranscriptionSegment(text: "", status: "processing", timestamp: startTime, filePath: url.path, recording: fallback)
             self.modelContext.insert(segment)
             try? self.modelContext.save()
             self.fetchRecordings()
@@ -126,7 +159,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         }
         // Update duration
         rec.duration += duration
-        let segment = TranscriptionSegment(text: "", status: "processing", timestamp: startTime, recording: rec)
+        let segment = TranscriptionSegment(text: "", status: "processing", timestamp: startTime, filePath: url.path, recording: rec)
         self.modelContext.insert(segment)
         try? self.modelContext.save()
         self.fetchRecordings()
@@ -146,6 +179,8 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                     } else if let text = text {
                         segment.status = "completed"
                         segment.text = text
+                        // Delete the processed segment audio file to free space
+                        try? FileManager.default.removeItem(atPath: segment.filePath)
                         // Set the title as soon as the first segment is completed and title is not set
                         if rec.title == nil && !text.isEmpty {
                             Task {
@@ -196,8 +231,8 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         
         if let queuedSegments = try? modelContext.fetch(descriptor) {
             for segment in queuedSegments {
-                if let recording = segment.recording {
-                    let audioURL = URL(fileURLWithPath: recording.filePath)
+                if let _ = segment.recording {
+                    let audioURL = URL(fileURLWithPath: segment.filePath)
                     transcriptionService.transcribe(
                         audioURL: audioURL,
                         segmentStart: segment.timestamp,
@@ -211,6 +246,8 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                             } else if let text = text {
                                 segment.status = "completed"
                                 segment.text = text
+                                // Delete processed file after queued success
+                                try? FileManager.default.removeItem(atPath: segment.filePath)
                             }
                             try? self?.modelContext.save()
                             self?.fetchRecordings()
@@ -222,9 +259,8 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     }
     
     func checkNetworkStatus() {
-        // This would typically use a proper network monitoring library
-        // For now, we'll use a simple check
-        isOnline = true // Placeholder - implement proper network monitoring
+        // Already handled by NetworkMonitor; expose current state
+        isOnline = networkMonitor.isOnline
     }
     
     var filteredRecordings: [Recording] {

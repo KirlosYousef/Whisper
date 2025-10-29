@@ -38,13 +38,25 @@ final class TranscriptionSegment: Identifiable {
     var text: String
     var status: String // e.g., "pending", "processing", "completed", "failed"
     var timestamp: TimeInterval // Start time of segment in seconds
+    var filePath: String = "" // Per-segment audio file path
     @Relationship var recording: Recording?
     
+    init(id: UUID = UUID(), text: String = "", status: String = "pending", timestamp: TimeInterval, filePath: String, recording: Recording? = nil) {
+        self.id = id
+        self.text = text
+        self.status = status
+        self.timestamp = timestamp
+        self.filePath = filePath
+        self.recording = recording
+    }
+
+    // Backwards-compatible initializer used in tests and call sites that don't provide filePath
     init(id: UUID = UUID(), text: String = "", status: String = "pending", timestamp: TimeInterval, recording: Recording? = nil) {
         self.id = id
         self.text = text
         self.status = status
         self.timestamp = timestamp
+        self.filePath = ""
         self.recording = recording
     }
 }

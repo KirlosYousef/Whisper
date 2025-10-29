@@ -156,21 +156,11 @@ class AudioService: NSObject {
                 return
             }
             
-            // Use the input node's native format for the tap
+            // Use the input node's native format for both tap and file to avoid conversion
             let inputFormat = inputNode.outputFormat(forBus: 0)
-            // Use a compatible PCM format for AVAudioFile
-            let wavSettings: [String: Any] = [
-                AVFormatIDKey: Int(kAudioFormatLinearPCM),
-                AVSampleRateKey: inputFormat.sampleRate,
-                AVNumberOfChannelsKey: inputFormat.channelCount,
-                AVLinearPCMBitDepthKey: 16,
-                AVLinearPCMIsFloatKey: false,
-                AVLinearPCMIsBigEndianKey: false
-            ]
-            let fileFormat = AVAudioFormat(settings: wavSettings) ?? inputFormat
-            audioFile = try AVAudioFile(forWriting: audioFilename, settings: wavSettings)
-            
-            // Install tap with the input node's format
+            audioFile = try AVAudioFile(forWriting: audioFilename, settings: inputFormat.settings)
+
+            // Install tap using the input node's format
             inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
                 self?.processAudioBuffer(buffer)
             }
