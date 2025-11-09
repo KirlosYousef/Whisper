@@ -7,6 +7,9 @@ class TranscriptionService {
     private let maxRetries = 5
     private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
     
+    // Optional language for transcription (nil = auto-detect)
+    var preferredLanguage: String? = nil
+    
     init() {
         // Load API key from Config.plist
         print("🔍 Attempting to load API key from Config.plist...")
@@ -57,12 +60,8 @@ class TranscriptionService {
     }
     
     func transcribe(audioURL: URL, segmentStart: TimeInterval, duration: TimeInterval, completion: @escaping (String?, Error?) -> Void) {
-        // Check network connectivity first
-        guard isNetworkAvailable() else {
-            completion(nil, TranscriptionError.noNetwork)
-            return
-        }
-        
+        // Network connectivity is checked in RecordingViewModel using NetworkMonitor
+        // No blocking check needed here - let the API call fail naturally if offline
         transcribeWithRetry(audioURL: audioURL, retryCount: 0, completion: completion)
     }
     
@@ -112,11 +111,13 @@ class TranscriptionService {
         // model
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
         body.append("Content-Disposition: form-data; name=\"model\"\r\n\r\n".data(using: .utf8)!)
-        body.append("gpt-4o-mini-transcribe\r\n".data(using: .utf8)!)
-        // optional language hint
-        body.append("--\(boundary)\r\n".data(using: .utf8)!)
-        body.append("Content-Disposition: form-data; name=\"language\"\r\n\r\n".data(using: .utf8)!)
-        body.append("en\r\n".data(using: .utf8)!)
+        body.append("whisper-1\r\n".data(using: .utf8)!)
+        // Add language parameter if specified (otherwise auto-detect)
+        if let language = preferredLanguage, !language.isEmpty {
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"language\"\r\n\r\n".data(using: .utf8)!)
+            body.append("\(language)\r\n".data(using: .utf8)!)
+        }
         // response_format
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
         body.append("Content-Disposition: form-data; name=\"response_format\"\r\n\r\n".data(using: .utf8)!)
@@ -183,21 +184,6 @@ class TranscriptionService {
                 completion(result.bestTranscription.formattedString, nil)
             }
         }
-    }
-    
-    private func isNetworkAvailable() -> Bool {
-        // Simple network check - in production, you might want to use Reachability
-        guard let url = URL(string: "https://www.apple.com") else { return false }
-        let semaphore = DispatchSemaphore(value: 0)
-        var isReachable = false
-        
-        URLSession.shared.dataTask(with: url) { _, response, _ in
-            isReachable = (response as? HTTPURLResponse)?.statusCode == 200
-            semaphore.signal()
-        }.resume()
-        
-        _ = semaphore.wait(timeout: .now() + 3.0)
-        return isReachable
     }
 }
 

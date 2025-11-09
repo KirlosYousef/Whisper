@@ -142,7 +142,8 @@ class AudioService: NSObject {
     }
 
     private func startNewSegment(completion: ((Bool, String?) -> Void)? = nil) {
-        let audioFilename = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".wav")
+        // Record to WAV first (required for real-time writing)
+        let tempWavFilename = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".wav")
         
         do {
             try recordingSession.setCategory(.playAndRecord, mode: .default)
@@ -156,9 +157,21 @@ class AudioService: NSObject {
                 return
             }
             
-            // Use the input node's native format for both tap and file to avoid conversion
+            // Use the input node's native format for recording
             let inputFormat = inputNode.outputFormat(forBus: 0)
-            audioFile = try AVAudioFile(forWriting: audioFilename, settings: inputFormat.settings)
+            
+            // Use optimized settings for smaller WAV files
+            // 16kHz mono is sufficient for speech and reduces file size
+            let recordingSettings: [String: Any] = [
+                AVFormatIDKey: kAudioFormatLinearPCM,
+                AVSampleRateKey: 16000.0,  // 16kHz instead of 44.1kHz (smaller files)
+                AVNumberOfChannelsKey: 1,   // Mono instead of stereo (2x smaller)
+                AVLinearPCMBitDepthKey: 16, // 16-bit instead of 32-bit
+                AVLinearPCMIsFloatKey: false,
+                AVLinearPCMIsBigEndianKey: false
+            ]
+            
+            audioFile = try AVAudioFile(forWriting: tempWavFilename, settings: recordingSettings)
 
             // Install tap using the input node's format
             inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
@@ -168,13 +181,14 @@ class AudioService: NSObject {
             // Start the engine
             try audioEngine.start()
             
-            currentFilePath = audioFilename.path
+            currentFilePath = tempWavFilename.path
             recordingStartTime = Date()
             isRecording = true
             
-            // Start or restart timer
+            // Start or restart timer - reduced to 20s for faster transcription feedback
+            // This provides better UX with shorter wait times while maintaining good transcription quality
             segmentTimer?.invalidate()
-            segmentTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: false) { [weak self] _ in
+            segmentTimer = Timer.scheduledTimer(withTimeInterval: 20.0, repeats: false) { [weak self] _ in
                 self?.finishCurrentSegmentAndStartNew()
             }
             
@@ -207,8 +221,42 @@ class AudioService: NSObject {
             self?.delegate?.audioService(self!, didUpdateAudioLevel: normalizedLevel)
         }
         
-        // Write to file
-        try? audioFile?.write(from: buffer)
+        // Convert and write to file if format conversion is needed
+        guard let audioFile = audioFile else { return }
+        
+        let inputFormat = buffer.format
+        let outputFormat = audioFile.processingFormat
+        
+        // If formats match, write directly
+        if inputFormat == outputFormat {
+            try? audioFile.write(from: buffer)
+            return
+        }
+        
+        // Otherwise, convert the format (e.g., 48kHz stereo → 16kHz mono)
+        guard let converter = AVAudioConverter(from: inputFormat, to: outputFormat) else {
+            // If conversion fails, try writing directly (AVAudioFile may handle it)
+            try? audioFile.write(from: buffer)
+            return
+        }
+        
+        // Calculate output buffer size
+        let capacity = AVAudioFrameCount(Double(buffer.frameLength) * outputFormat.sampleRate / inputFormat.sampleRate)
+        guard let convertedBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: capacity) else {
+            return
+        }
+        
+        var error: NSError?
+        let inputBlock: AVAudioConverterInputBlock = { _, outStatus in
+            outStatus.pointee = .haveData
+            return buffer
+        }
+        
+        converter.convert(to: convertedBuffer, error: &error, withInputFrom: inputBlock)
+        
+        if error == nil {
+            try? audioFile.write(from: convertedBuffer)
+        }
     }
 
     private func finishCurrentSegmentAndStartNew() {

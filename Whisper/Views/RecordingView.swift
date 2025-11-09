@@ -21,6 +21,31 @@ struct RecordingView: View {
             }
             .navigationTitle("Whisper Recorder")
             .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Menu {
+                        Picker("Language", selection: $viewModel.selectedLanguage) {
+                            Text("Auto-detect").tag("auto")
+                            Divider()
+                            Text("Arabic").tag("ar")
+                            Text("English").tag("en")
+                            Text("French").tag("fr")
+                            Text("Spanish").tag("es")
+                            Text("German").tag("de")
+                            Text("Chinese").tag("zh")
+                            Text("Japanese").tag("ja")
+                            Text("Korean").tag("ko")
+                            Text("Russian").tag("ru")
+                            Text("Portuguese").tag("pt")
+                            Text("Italian").tag("it")
+                            Text("Dutch").tag("nl")
+                            Text("Turkish").tag("tr")
+                            Text("Hindi").tag("hi")
+                        }
+                    } label: {
+                        Label("Language", systemImage: "globe")
+                    }
+                }
+                
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button(role: .destructive) {
                         viewModel.showClearConfirmation = true
