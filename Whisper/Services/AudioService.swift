@@ -1,5 +1,11 @@
+//
+//  AudioService.swift
+//  Whisper
+//
+//  Created by Kirlos Yousef on 11/11/2025.
+//
+
 import Foundation
-#if os(iOS)
 import AVFoundation
 
 protocol AudioServiceDelegate: AnyObject {
@@ -329,6 +335,3 @@ class AudioService: NSObject {
     
 
 }
-#endif
-
-

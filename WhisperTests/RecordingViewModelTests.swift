@@ -1,3 +1,10 @@
+//
+//  RecordingViewModelTests.swift
+//  WhisperTests
+//
+//  Created by Kirlos Yousef on 06/07/2025.
+//
+
 import XCTest
 import SwiftData
 @testable import Whisper

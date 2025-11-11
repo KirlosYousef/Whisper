@@ -1,18 +1,26 @@
+//
+//  AudioModels.swift
+//  Whisper
+//
+//  Created by Kirlos Yousef on 11/11/2025.
+//
+
 import Foundation
 import SwiftData
 
 @Model
-final class Recording: Identifiable {
-    @Attribute(.unique) var id: UUID
-    var createdAt: Date
-    var duration: TimeInterval
-    var filePath: String
-    var summary: String?
-    var todoList: [String]?
-    var title: String?
-    @Relationship(deleteRule: .cascade, inverse: \TranscriptionSegment.recording) var segments: [TranscriptionSegment] = []
+public final class Recording: Identifiable {
+    @Attribute(.unique) public var id: UUID
+    public var createdAt: Date
+    public var duration: TimeInterval
+    public var filePath: String
+    public var summary: String?
+    public var todoList: [String]?
+    public var keywords: [String]?
+    public var title: String?
+    @Relationship(deleteRule: .cascade, inverse: \TranscriptionSegment.recording) public var segments: [TranscriptionSegment] = []
     
-    init(id: UUID = UUID(), createdAt: Date = Date(), duration: TimeInterval, filePath: String, title: String? = nil) {
+    public init(id: UUID = UUID(), createdAt: Date = Date(), duration: TimeInterval, filePath: String, title: String? = nil) {
         self.id = id
         self.createdAt = createdAt
         self.duration = duration
@@ -33,15 +41,15 @@ final class Recording: Identifiable {
 }
 
 @Model
-final class TranscriptionSegment: Identifiable {
-    @Attribute(.unique) var id: UUID
-    var text: String
-    var status: String // e.g., "pending", "processing", "completed", "failed"
-    var timestamp: TimeInterval // Start time of segment in seconds
-    var filePath: String = "" // Per-segment audio file path
-    @Relationship var recording: Recording?
+public final class TranscriptionSegment: Identifiable {
+    @Attribute(.unique) public var id: UUID
+    public var text: String
+    public var status: String // e.g., "pending", "processing", "completed", "failed"
+    public var timestamp: TimeInterval // Start time of segment in seconds
+    public var filePath: String = "" // Per-segment audio file path
+    @Relationship public var recording: Recording?
     
-    init(id: UUID = UUID(), text: String = "", status: String = "pending", timestamp: TimeInterval, filePath: String, recording: Recording? = nil) {
+    public init(id: UUID = UUID(), text: String = "", status: String = "pending", timestamp: TimeInterval, filePath: String, recording: Recording? = nil) {
         self.id = id
         self.text = text
         self.status = status
@@ -51,7 +59,7 @@ final class TranscriptionSegment: Identifiable {
     }
 
     // Backwards-compatible initializer used in tests and call sites that don't provide filePath
-    init(id: UUID = UUID(), text: String = "", status: String = "pending", timestamp: TimeInterval, recording: Recording? = nil) {
+    public init(id: UUID = UUID(), text: String = "", status: String = "pending", timestamp: TimeInterval, recording: Recording? = nil) {
         self.id = id
         self.text = text
         self.status = status

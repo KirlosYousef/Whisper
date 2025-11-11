@@ -1,16 +1,31 @@
+//
+//  RecordingView.swift
+//  Whisper
+//
+//  Created by Kirlos Yousef on 11/11/2025.
+//
+
 import SwiftUI
 import SwiftData
+import UIKit
 
 struct RecordingView: View {
     @Environment(\.modelContext) private var modelContext
     @StateObject private var viewModel: RecordingViewModel
+    @State private var qaRecording: Recording? = nil
+    @State private var qaQuestion: String = ""
+    @State private var qaAnswer: String? = nil
+    @State private var qaLoading: Bool = false
+    @State private var showCleanupConfirmation: Bool = false
+    @State private var showCopyAlert: Bool = false
+    @State private var copyAlertMessage: String = ""
     
     init(viewModel: RecordingViewModel) {
         _viewModel = StateObject(wrappedValue: viewModel)
     }
     
     var body: some View {
-        NavigationView {
+        NavigationStack {
             VStack(spacing: 32) {
                 Spacer()
                 recordButton
@@ -53,6 +68,14 @@ struct RecordingView: View {
                         Label("Clear All", systemImage: "trash")
                     }
                 }
+                
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button {
+                        showCleanupConfirmation = true
+                    } label: {
+                        Label("Free Space", systemImage: "externaldrive.badge.minus")
+                    }
+                }
             }
             .searchable(text: $viewModel.searchText, prompt: "Search transcriptions...")
             .ignoresSafeArea(.container, edges: .bottom)
@@ -63,6 +86,62 @@ struct RecordingView: View {
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("This will permanently delete all recordings and their transcriptions. This action cannot be undone.")
+            }
+            .alert("Remove Processed Audio?", isPresented: $showCleanupConfirmation) {
+                Button("Remove", role: .destructive) {
+                    viewModel.cleanupProcessedAudioFiles()
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This will remove stored per-segment audio files for completed transcripts to free up space. Transcripts will remain.")
+            }
+            .alert(copyAlertMessage, isPresented: $showCopyAlert) {
+                Button("OK", role: .cancel) {}
+            }
+            .sheet(item: $qaRecording) { rec in
+                VStack(alignment: .leading, spacing: 16) {
+                    Text("Ask a Question")
+                        .font(.headline)
+                    TextField("Type your question…", text: $qaQuestion)
+                        .textFieldStyle(RoundedBorderTextFieldStyle())
+                    if qaLoading {
+                        HStack {
+                            ProgressView()
+                            Text("Answering…")
+                                .foregroundColor(.secondary)
+                        }
+                    } else if let answer = qaAnswer, !answer.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Answer")
+                                .font(.subheadline)
+                                .fontWeight(.medium)
+                            Text(answer)
+                                .font(.body)
+                        }
+                    }
+                    HStack {
+                        Button("Cancel") {
+                            qaRecording = nil
+                            qaQuestion = ""
+                            qaAnswer = nil
+                            qaLoading = false
+                        }
+                        Spacer()
+                        Button("Ask") {
+                            guard !qaQuestion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+                            qaLoading = true
+                            qaAnswer = nil
+                            Task {
+                                let answer = await viewModel.answerQuestion(for: rec, question: qaQuestion)
+                                qaAnswer = answer
+                                qaLoading = false
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                }
+                .padding()
+                .modifier(PresentationDetentsIfAvailable())
             }
         }
         .onAppear {
@@ -198,9 +277,6 @@ struct RecordingView: View {
             }
         }
         .listStyle(InsetGroupedListStyle())
-        .refreshable {
-            viewModel.refreshRecordings()
-        }
         .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
     }
     
@@ -226,9 +302,60 @@ struct RecordingView: View {
                     }
                     
                     Button(action: {
+                        Task {
+                            await viewModel.extractKeywords(for: recording)
+                        }
+                    }) {
+                        Label("Extract Keywords", systemImage: "tag")
+                    }
+                    
+                    Button(action: {
+                        qaRecording = recording
+                        qaQuestion = ""
+                        qaAnswer = nil
+                        qaLoading = false
+                    }) {
+                        Label("Ask a Question", systemImage: "questionmark.bubble")
+                    }
+                    
+                    Button(action: {
                         SummaryService.shareRecording(recording)
                     }) {
                         Label("Share", systemImage: "square.and.arrow.up")
+                    }
+                    
+                    Menu("Export") {
+                        Button {
+                            let md = SummaryService.exportString(for: recording, format: .markdown)
+                            UIPasteboard.general.string = md
+                            copyAlertMessage = "Markdown copied to clipboard"
+                            showCopyAlert = true
+                        } label: {
+                            Label("Copy Markdown", systemImage: "doc.on.doc")
+                        }
+                        Button {
+                            SummaryService.shareRecording(recording, format: .markdown)
+                        } label: {
+                            Label("Share Markdown", systemImage: "square.and.arrow.up")
+                        }
+                        Button {
+                            SummaryService.shareRecording(recording, format: .text)
+                        } label: {
+                            Label("Share Text", systemImage: "square.and.arrow.up")
+                        }
+                        Button {
+                            if let keywords = recording.keywords, !keywords.isEmpty {
+                                let hashtags = keywords.map { "#" + $0.replacingOccurrences(of: " ", with: "") }.joined(separator: " ")
+                                UIPasteboard.general.string = hashtags
+                                copyAlertMessage = "Hashtags copied to clipboard"
+                                showCopyAlert = true
+                            } else {
+                                copyAlertMessage = "No keywords available to export"
+                                showCopyAlert = true
+                            }
+                        } label: {
+                            Label("Copy Hashtags", systemImage: "number")
+                        }
                     }
                 } label: {
                     Image(systemName: "ellipsis.circle")
@@ -248,6 +375,26 @@ struct RecordingView: View {
                     Text(summary)
                         .font(.caption)
                         .foregroundColor(.secondary)
+                }
+                .padding(.vertical, 4)
+            }
+            
+            if let keywords = recording.keywords, !keywords.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Keywords")
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                    WrapHStack(spacing: 8, lineSpacing: 8) {
+                        ForEach(keywords, id: \.self) { keyword in
+                            Text(keyword)
+                                .font(.caption)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(Color.accentColor.opacity(0.12))
+                                .foregroundColor(.accentColor)
+                                .clipShape(Capsule())
+                        }
+                    }
                 }
                 .padding(.vertical, 4)
             }
@@ -288,9 +435,16 @@ struct RecordingView: View {
             if let segments = fetchSegments(for: recording), !segments.isEmpty {
                 ForEach(segments, id: \.id) { segment in
                     HStack(alignment: .top, spacing: 8) {
-                        Text("\(segmentLabel(segment))")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                        Button(action: {
+                            viewModel.play(segment: segment)
+                        }) {
+                            Text("\(segmentLabel(segment))")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .underline()
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
                         segmentStatusView(segment: segment)
                     }
                 }
@@ -369,6 +523,74 @@ struct RecordingView: View {
         let mins = Int(segment.timestamp) / 60
         let secs = Int(segment.timestamp) % 60
         return String(format: "[%02d:%02d]", mins, secs)
+    }
+}
+
+// MARK: - WrapHStack
+struct WrapHStack<Content: View>: View {
+    let spacing: CGFloat
+    let lineSpacing: CGFloat
+    let content: () -> Content
+    
+    init(spacing: CGFloat = 8, lineSpacing: CGFloat = 8, @ViewBuilder content: @escaping () -> Content) {
+        self.spacing = spacing
+        self.lineSpacing = lineSpacing
+        self.content = content
+    }
+    
+    var body: some View {
+        GeometryReader { geometry in
+            let availableWidth = geometry.size.width
+            _Wrap(content: content(), availableWidth: availableWidth, spacing: spacing, lineSpacing: lineSpacing)
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
+
+// MARK: - iOS 16+ presentation detents compatibility
+private struct PresentationDetentsIfAvailable: ViewModifier {
+    func body(content: Content) -> some View {
+        #if os(iOS)
+        if #available(iOS 16.0, *) {
+            content.presentationDetents([.medium])
+        } else {
+            content
+        }
+        #else
+        content
+        #endif
+    }
+}
+
+private struct _Wrap<Content: View>: View {
+    let content: Content
+    let availableWidth: CGFloat
+    let spacing: CGFloat
+    let lineSpacing: CGFloat
+    
+    var body: some View {
+        var width: CGFloat = 0
+        var height: CGFloat = 0
+        
+        return ZStack(alignment: .topLeading) {
+            content
+                .fixedSize()
+                .alignmentGuide(.leading) { d in
+                    if (abs(width - d.width) > availableWidth) {
+                        width = 0
+                        height -= d.height + lineSpacing
+                    }
+                    let result = width
+                    if content is EmptyView == false {
+                        width -= d.width + spacing
+                    }
+                    return result
+                }
+                .alignmentGuide(.top) { _ in
+                    let result = height
+                    return result
+                }
+        }
     }
 }
 

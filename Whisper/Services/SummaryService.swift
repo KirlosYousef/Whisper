@@ -1,14 +1,24 @@
+//
+//  SummaryService.swift
+//  Whisper
+//
+//  Created by Kirlos Yousef on 11/11/2025.
+//
+
 import Foundation
 import SwiftData
-#if canImport(UIKit)
 import UIKit
-#endif
 
 public class SummaryService {
     // Private singleton instance
     private static let shared = SummaryService()
     private let apiKey: String
     private let endpoint = URL(string: "https://api.openai.com/v1/chat/completions")!
+    
+    public enum ExportFormat {
+        case markdown
+        case text
+    }
     
     // Model selection: Use the appropriate OpenAI chat model
     // Options: "gpt-4o-mini" (fast & cheap), "gpt-4o" (more capable), "gpt-3.5-turbo" (legacy)
@@ -27,19 +37,8 @@ public class SummaryService {
     }
     
     // Public static methods
-    #if canImport(UIKit)
     static func shareRecording(_ recording: Recording) {
-        let text = """
-        Recording from \(recording.createdAt.formatted())
-        Duration: \(formatDuration(recording.duration))
-        
-        Transcript:
-        \(recording.fullTranscript)
-        
-        \(recording.summary != nil ? "\nSummary:\n\(recording.summary!)" : "")
-        \(recording.todoList != nil && !recording.todoList!.isEmpty ? "\n\nTodo Items:\n" + recording.todoList!.map { "- \($0)" }.joined(separator: "\n") : "")
-        """
-        
+        let text = exportString(for: recording, format: .text)
         let activityVC = UIActivityViewController(activityItems: [text], applicationActivities: nil)
         if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
            let window = windowScene.windows.first,
@@ -49,7 +48,58 @@ public class SummaryService {
             }
         }
     }
-    #endif
+    
+    static func shareRecording(_ recording: Recording, format: ExportFormat) {
+        let exported = exportString(for: recording, format: format)
+        let activityVC = UIActivityViewController(activityItems: [exported], applicationActivities: nil)
+        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+           let window = windowScene.windows.first,
+           let rootViewController = window.rootViewController {
+            DispatchQueue.main.async {
+                rootViewController.present(activityVC, animated: true)
+            }
+        }
+    }
+    
+    public static func exportString(for recording: Recording, format: ExportFormat) -> String {
+        switch format {
+        case .text:
+            var lines: [String] = []
+            let title = recording.title?.isEmpty == false ? recording.title! : "Recording"
+            lines.append("\(title)")
+            lines.append("Date: \(recording.createdAt.formatted())")
+            lines.append("Duration: \(formatDuration(recording.duration))")
+            if let keywords = recording.keywords, !keywords.isEmpty {
+                lines.append("Keywords: \(keywords.joined(separator: ", "))")
+            }
+            if let summary = recording.summary, !summary.isEmpty {
+                lines.append("\nSummary:\n\(summary)")
+            }
+            if let todos = recording.todoList, !todos.isEmpty {
+                lines.append("\nAction Items:")
+                lines.append(contentsOf: todos.map { "- \($0)" })
+            }
+            lines.append("\nTranscript:\n\(recording.fullTranscript)")
+            return lines.joined(separator: "\n")
+        case .markdown:
+            let title = recording.title?.isEmpty == false ? recording.title! : "Recording"
+            var md = "# \(title)\n\n"
+            md += "- Date: \(recording.createdAt.formatted())\n"
+            md += "- Duration: \(formatDuration(recording.duration))\n"
+            if let keywords = recording.keywords, !keywords.isEmpty {
+                md += "- Keywords: " + keywords.map { "`\($0)`" }.joined(separator: ", ") + "\n"
+            }
+            if let summary = recording.summary, !summary.isEmpty {
+                md += "\n## Summary\n\(summary)\n"
+            }
+            if let todos = recording.todoList, !todos.isEmpty {
+                md += "\n## Action Items\n"
+                for t in todos { md += "- \(t)\n" }
+            }
+            md += "\n## Transcript\n\(recording.fullTranscript)\n"
+            return md
+        }
+    }
     
     public static func generateSummary(for transcript: String) async -> (summary: String, todos: [String]) {
         // Use OpenAI API if key is configured
@@ -80,6 +130,31 @@ public class SummaryService {
         // Fallback
         let summary = String(transcript.prefix(20))
         return (summary, [])
+    }
+    
+    // MARK: - Q&A
+    public static func answerQuestion(transcript: String, question: String) async throws -> String {
+        guard !question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return ""
+        }
+        // If no API key, provide a minimal fallback
+        guard shared.apiKey != "YOUR_API_KEY_HERE", !transcript.isEmpty else {
+            return "Unable to answer without AI. Please configure OpenAI API key."
+        }
+        return try await shared.answerQuestionWithOpenAI(transcript: transcript, question: question)
+    }
+    
+    // MARK: - Keywords
+    public static func extractKeywords(for transcript: String, maxKeywords: Int = 8) async -> [String] {
+        guard shared.apiKey != "YOUR_API_KEY_HERE", !transcript.isEmpty else {
+            return []
+        }
+        do {
+            return try await shared.extractKeywordsWithOpenAI(transcript: transcript, maxKeywords: maxKeywords)
+        } catch {
+            print("SummaryService: Keyword extraction failed, error: \(error)")
+            return []
+        }
     }
     
     private func summarizeWithOpenAI(transcript: String) async throws -> (String, [String]) {
@@ -245,3 +320,118 @@ public class SummaryService {
         return String(format: "%02d:%02d", minutes, seconds)
     }
 }
+
+// MARK: - Private OpenAI helpers
+private extension SummaryService {
+    func extractKeywordsWithOpenAI(transcript: String, maxKeywords: Int) async throws -> [String] {
+        let maxTranscriptLength = 4000
+        let truncatedTranscript = transcript.count > maxTranscriptLength
+            ? String(transcript.prefix(maxTranscriptLength)) + "..."
+            : transcript
+        
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 30.0
+        
+        let prompt = """
+        Extract up to \(maxKeywords) concise keywords or key phrases from the transcript. \
+        Return STRICT JSON: {\"keywords\": [\"...\"]}. Use lowercase; no punctuation.
+        Transcript:
+        \(truncatedTranscript)
+        """
+        let body: [String: Any] = [
+            "model": model,
+            "messages": [
+                ["role": "system", "content": "You extract keywords from transcripts and return strict JSON."],
+                ["role": "user", "content": prompt]
+            ],
+            "temperature": 0.2,
+            "max_tokens": 128,
+            "response_format": ["type": "json_object"]
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        
+        let session = URLSession(configuration: .default)
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+            let responseBody = String(data: data, encoding: .utf8) ?? "Unable to decode response"
+            throw NSError(domain: "SummaryService", code: 3, userInfo: [NSLocalizedDescriptionKey: "Keyword API error: \(responseBody)"])
+        }
+        struct KeywordResponse: Decodable { let keywords: [String]? }
+        if let decoded = try? JSONDecoder().decode(KeywordResponse.self, from: data) {
+            return decoded.keywords ?? []
+        }
+        // Fallback parse if model returned plain text
+        if let text = String(data: data, encoding: .utf8) {
+            let candidates = text
+                .replacingOccurrences(of: "\n", with: " ")
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+                .filter { !$0.isEmpty }
+            return Array(candidates.prefix(maxKeywords))
+        }
+        return []
+    }
+    func answerQuestionWithOpenAI(transcript: String, question: String) async throws -> String {
+        // Limit transcript length to keep payload small
+        let maxTranscriptLength = 6000
+        let truncatedTranscript = transcript.count > maxTranscriptLength
+            ? String(transcript.prefix(maxTranscriptLength)) + "..."
+            : transcript
+        
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 30.0
+        
+        let system = """
+        You answer questions strictly using the provided transcript. \
+        If the answer is not clearly present, reply with: \"Not found in transcript.\" \
+        Be concise (<= 2 sentences).
+        """
+        let user = """
+        Transcript:
+        \(truncatedTranscript)
+        
+        Question: \(question)
+        """
+        let body: [String: Any] = [
+            "model": model,
+            "messages": [
+                ["role": "system", "content": system],
+                ["role": "user", "content": user]
+            ],
+            "temperature": 0.2,
+            "max_tokens": 200
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 30.0
+        config.timeoutIntervalForResource = 60.0
+        let session = URLSession(configuration: config)
+        let (data, response) = try await session.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+            let responseBody = String(data: data, encoding: .utf8) ?? "Unable to decode response"
+            throw NSError(domain: "SummaryService", code: 2, userInfo: [NSLocalizedDescriptionKey: "Q&A API error: \(responseBody)"])
+        }
+        
+        struct OpenAIResponse: Decodable {
+            struct Choice: Decodable {
+                struct Message: Decodable {
+                    let content: String
+                }
+                let message: Message
+            }
+            let choices: [Choice]
+        }
+        let decoded = try JSONDecoder().decode(OpenAIResponse.self, from: data)
+        let content = decoded.choices.first?.message.content.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return content
+    }
+}
+

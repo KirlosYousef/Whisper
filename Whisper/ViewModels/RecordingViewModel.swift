@@ -1,3 +1,10 @@
+//
+//  NetworkMonitor.swift
+//  Whisper
+//
+//  Created by Kirlos Yousef on 11/11/2025.
+//
+
 import Foundation
 import AVFoundation
 import SwiftData
@@ -185,8 +192,6 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                     } else if let text = text {
                         segment.status = "completed"
                         segment.text = text
-                        // Delete the processed segment audio file to free space
-                        try? FileManager.default.removeItem(atPath: segment.filePath)
                         // Set the title as soon as the first segment is completed and title is not set
                         if rec.title == nil && !text.isEmpty {
                             Task {
@@ -252,8 +257,6 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                             } else if let text = text {
                                 segment.status = "completed"
                                 segment.text = text
-                                // Delete processed file after queued success
-                                try? FileManager.default.removeItem(atPath: segment.filePath)
                             }
                             try? self?.modelContext.save()
                             self?.fetchRecordings()
@@ -267,6 +270,18 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     func checkNetworkStatus() {
         // Already handled by NetworkMonitor; expose current state
         isOnline = networkMonitor.isOnline
+    }
+    
+    // MARK: - Q&A
+    @MainActor
+    func answerQuestion(for recording: Recording, question: String) async -> String {
+        let transcript = recording.fullTranscript
+        do {
+            let answer = try await SummaryService.answerQuestion(transcript: transcript, question: question)
+            return answer
+        } catch {
+            return "Failed to answer: \(error.localizedDescription)"
+        }
     }
     
     var filteredRecordings: [Recording] {
@@ -283,9 +298,53 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         }
     }
     
+    // MARK: - Keywords
+    @MainActor
+    func extractKeywords(for recording: Recording) async {
+        let transcript = recording.fullTranscript
+        let keywords = await SummaryService.extractKeywords(for: transcript, maxKeywords: 8)
+        if !keywords.isEmpty {
+            recording.keywords = keywords
+            try? modelContext.save()
+            fetchRecordings()
+        }
+    }
+    
     private func fetchSegments(for recording: Recording) -> [TranscriptionSegment]? {
         guard let allSegments = try? modelContext.fetch(FetchDescriptor<TranscriptionSegment>()) else { return nil }
         return allSegments.filter { $0.recording?.id == recording.id }
+    }
+    
+    // MARK: - Playback
+    func play(from timestamp: TimeInterval, in recording: Recording) {
+        let segments = fetchSegments(for: recording) ?? []
+        let sorted = segments.sorted { $0.timestamp < $1.timestamp }
+        // Prefer exact match within 0.5s; otherwise pick the nearest by absolute difference
+        if let exact = sorted.first(where: { abs($0.timestamp - timestamp) <= 0.5 }) {
+            guard !exact.filePath.isEmpty, FileManager.default.fileExists(atPath: exact.filePath) else {
+                DispatchQueue.main.async { self.errorMessage = "Audio file not found for this segment." }
+                return
+            }
+            let url = URL(fileURLWithPath: exact.filePath)
+            PlaybackService.shared.playSegment(at: url)
+            return
+        }
+        guard let nearest = sorted.min(by: { abs($0.timestamp - timestamp) < abs($1.timestamp - timestamp) }) else {
+            return
+        }
+        guard !nearest.filePath.isEmpty, FileManager.default.fileExists(atPath: nearest.filePath) else {
+            DispatchQueue.main.async { self.errorMessage = "Audio file not found for this segment." }
+            return
+        }
+        PlaybackService.shared.playSegment(at: URL(fileURLWithPath: nearest.filePath))
+    }
+    
+    func play(segment: TranscriptionSegment) {
+        guard !segment.filePath.isEmpty, FileManager.default.fileExists(atPath: segment.filePath) else {
+            DispatchQueue.main.async { self.errorMessage = "Audio file not found for this segment." }
+            return
+        }
+        PlaybackService.shared.playSegment(at: URL(fileURLWithPath: segment.filePath))
     }
     
     func clearAllRecordings() {
@@ -294,6 +353,25 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
             for rec in allRecordings {
                 modelContext.delete(rec)
             }
+            try? modelContext.save()
+            fetchRecordings()
+        }
+    }
+    
+    // MARK: - Storage Cleanup
+    func cleanupProcessedAudioFiles() {
+        guard let allSegments = try? modelContext.fetch(FetchDescriptor<TranscriptionSegment>()) else { return }
+        var didDelete = false
+        for seg in allSegments where seg.status == "completed" && !seg.filePath.isEmpty {
+            do {
+                try FileManager.default.removeItem(atPath: seg.filePath)
+                seg.filePath = ""
+                didDelete = true
+            } catch {
+                print("Cleanup failed for \(seg.filePath): \(error)")
+            }
+        }
+        if didDelete {
             try? modelContext.save()
             fetchRecordings()
         }
