@@ -359,20 +359,36 @@ private extension SummaryService {
             let responseBody = String(data: data, encoding: .utf8) ?? "Unable to decode response"
             throw NSError(domain: "SummaryService", code: 3, userInfo: [NSLocalizedDescriptionKey: "Keyword API error: \(responseBody)"])
         }
+        // Decode OpenAI chat response, then parse message.content JSON
+        struct OpenAIResponse: Decodable {
+            struct Choice: Decodable {
+                struct Message: Decodable { let content: String }
+                let message: Message
+            }
+            let choices: [Choice]
+        }
         struct KeywordResponse: Decodable { let keywords: [String]? }
-        if let decoded = try? JSONDecoder().decode(KeywordResponse.self, from: data) {
-            return decoded.keywords ?? []
+        let decoded = try JSONDecoder().decode(OpenAIResponse.self, from: data)
+        var content = decoded.choices.first?.message.content ?? ""
+        // Defensive: strip code fences if any
+        if content.hasPrefix("```") {
+            content = content
+                .replacingOccurrences(of: "```json", with: "")
+                .replacingOccurrences(of: "```", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        // Fallback parse if model returned plain text
-        if let text = String(data: data, encoding: .utf8) {
-            let candidates = text
-                .replacingOccurrences(of: "\n", with: " ")
-                .split(separator: ",")
-                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
-                .filter { !$0.isEmpty }
-            return Array(candidates.prefix(maxKeywords))
+        if let jsonData = content.data(using: .utf8),
+           let kw = try? JSONDecoder().decode(KeywordResponse.self, from: jsonData),
+           let keywords = kw.keywords {
+            return Array(keywords.prefix(maxKeywords))
         }
-        return []
+        // Last resort: attempt naive CSV split of the content
+        let candidates = content
+            .replacingOccurrences(of: "\n", with: " ")
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .filter { !$0.isEmpty }
+        return Array(candidates.prefix(maxKeywords))
     }
     func answerQuestionWithOpenAI(transcript: String, question: String) async throws -> String {
         // Limit transcript length to keep payload small

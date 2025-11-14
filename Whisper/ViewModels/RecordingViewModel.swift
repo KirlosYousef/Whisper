@@ -300,7 +300,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     
     // MARK: - Keywords
     @MainActor
-    func extractKeywords(for recording: Recording) async {
+    func extractKeywords(for recording: Recording) async -> [String] {
         let transcript = recording.fullTranscript
         let keywords = await SummaryService.extractKeywords(for: transcript, maxKeywords: 8)
         if !keywords.isEmpty {
@@ -308,6 +308,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
             try? modelContext.save()
             fetchRecordings()
         }
+        return keywords
     }
     
     private func fetchSegments(for recording: Recording) -> [TranscriptionSegment]? {
@@ -340,11 +341,23 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     }
     
     func play(segment: TranscriptionSegment) {
-        guard !segment.filePath.isEmpty, FileManager.default.fileExists(atPath: segment.filePath) else {
-            DispatchQueue.main.async { self.errorMessage = "Audio file not found for this segment." }
+        let fm = FileManager.default
+        if !segment.filePath.isEmpty, fm.fileExists(atPath: segment.filePath) {
+            PlaybackService.shared.playSegment(at: URL(fileURLWithPath: segment.filePath))
             return
         }
-        PlaybackService.shared.playSegment(at: URL(fileURLWithPath: segment.filePath))
+        // Fallback: look for file under Documents/Segments with same filename
+        let originalName = URL(fileURLWithPath: segment.filePath).lastPathComponent
+        if let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first {
+            let candidate = docs.appendingPathComponent("Segments", isDirectory: true).appendingPathComponent(originalName)
+            if fm.fileExists(atPath: candidate.path) {
+                segment.filePath = candidate.path
+                try? modelContext.save()
+                PlaybackService.shared.playSegment(at: candidate)
+                return
+            }
+        }
+        DispatchQueue.main.async { self.errorMessage = "Audio file not found for this segment." }
     }
     
     func clearAllRecordings() {
@@ -377,4 +390,5 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         }
     }
 }
+
 

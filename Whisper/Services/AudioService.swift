@@ -36,6 +36,18 @@ class AudioService: NSObject {
         setupAudioSessionNotifications()
     }
     
+    private func segmentsDirectoryURL() -> URL? {
+        let fm = FileManager.default
+        guard let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first else {
+            return nil
+        }
+        let dir = docs.appendingPathComponent("Segments", isDirectory: true)
+        if !fm.fileExists(atPath: dir.path) {
+            try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        return dir
+    }
+    
     private func setupAudioSessionNotifications() {
         NotificationCenter.default.addObserver(
             self,
@@ -148,8 +160,14 @@ class AudioService: NSObject {
     }
 
     private func startNewSegment(completion: ((Bool, String?) -> Void)? = nil) {
-        // Record to WAV first (required for real-time writing)
-        let tempWavFilename = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".wav")
+        // Record to persistent WAV file under Documents/Segments so it survives app relaunch
+        let wavURL: URL
+        if let dir = segmentsDirectoryURL() {
+            wavURL = dir.appendingPathComponent(UUID().uuidString + ".wav")
+        } else {
+            // Fallback to temporary if documents dir is unavailable
+            wavURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".wav")
+        }
         
         do {
             try recordingSession.setCategory(.playAndRecord, mode: .default)
@@ -177,7 +195,7 @@ class AudioService: NSObject {
                 AVLinearPCMIsBigEndianKey: false
             ]
             
-            audioFile = try AVAudioFile(forWriting: tempWavFilename, settings: recordingSettings)
+            audioFile = try AVAudioFile(forWriting: wavURL, settings: recordingSettings)
 
             // Install tap using the input node's format
             inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
@@ -187,7 +205,7 @@ class AudioService: NSObject {
             // Start the engine
             try audioEngine.start()
             
-            currentFilePath = tempWavFilename.path
+            currentFilePath = wavURL.path
             recordingStartTime = Date()
             isRecording = true
             

@@ -19,6 +19,7 @@ struct RecordingView: View {
     @State private var showCleanupConfirmation: Bool = false
     @State private var showCopyAlert: Bool = false
     @State private var copyAlertMessage: String = ""
+    @State private var extractingRecordingId: UUID? = nil
     
     init(viewModel: RecordingViewModel) {
         _viewModel = StateObject(wrappedValue: viewModel)
@@ -152,16 +153,16 @@ struct RecordingView: View {
     
     // MARK: - Record Button
     private var recordButton: some View {
-                        Button(action: {
-                    if viewModel.isRecording {
-                        viewModel.stopRecording()
-                    } else {
-                        viewModel.requestPermission()
-                        if !viewModel.permissionDenied {
-                            viewModel.startRecording()
-                        }
-                    }
-                }) {
+        Button(action: {
+            if viewModel.isRecording {
+                viewModel.stopRecording()
+            } else {
+                viewModel.requestPermission()
+                if !viewModel.permissionDenied {
+                    viewModel.startRecording()
+                }
+            }
+        }) {
             ZStack {
                 // Audio level responsive ring when recording
                 if viewModel.isRecording {
@@ -303,7 +304,16 @@ struct RecordingView: View {
                     
                     Button(action: {
                         Task {
-                            await viewModel.extractKeywords(for: recording)
+                            extractingRecordingId = recording.id
+                            let newKeywords = await viewModel.extractKeywords(for: recording)
+                            extractingRecordingId = nil
+                            if newKeywords.isEmpty {
+                                copyAlertMessage = "No keywords found (or API not configured)"
+                                showCopyAlert = true
+                            } else {
+                                copyAlertMessage = "Keywords extracted"
+                                showCopyAlert = true
+                            }
                         }
                     }) {
                         Label("Extract Keywords", systemImage: "tag")
@@ -365,6 +375,12 @@ struct RecordingView: View {
                 
                 Text(durationString(recording.duration))
                     .foregroundColor(.secondary)
+                
+                if extractingRecordingId == recording.id {
+                    ProgressView()
+                        .scaleEffect(0.7)
+                        .padding(.leading, 4)
+                }
             }
             
             if let summary = recording.summary {
@@ -375,26 +391,6 @@ struct RecordingView: View {
                     Text(summary)
                         .font(.caption)
                         .foregroundColor(.secondary)
-                }
-                .padding(.vertical, 4)
-            }
-            
-            if let keywords = recording.keywords, !keywords.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Keywords")
-                        .font(.subheadline)
-                        .fontWeight(.medium)
-                    WrapHStack(spacing: 8, lineSpacing: 8) {
-                        ForEach(keywords, id: \.self) { keyword in
-                            Text(keyword)
-                                .font(.caption)
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 6)
-                                .background(Color.accentColor.opacity(0.12))
-                                .foregroundColor(.accentColor)
-                                .clipShape(Capsule())
-                        }
-                    }
                 }
                 .padding(.vertical, 4)
             }
@@ -418,6 +414,28 @@ struct RecordingView: View {
             
             Divider()
             transcriptionSegmentsView(for: recording)
+            
+            if let keywords = recording.keywords, !keywords.isEmpty {
+                HStack {
+                    Spacer()
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(keywords, id: \.self) { keyword in
+                                Text(keyword)
+                                    .font(.caption)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 6)
+                                    .background(Color.accentColor.opacity(0.12))
+                                    .foregroundColor(.accentColor)
+                                    .clipShape(Capsule())
+                            }
+                        }
+                    }
+                    .frame(height: 28)
+                }
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .padding(.top, 8)
+            }
         }
         .padding()
         .background(Color(.systemBackground))
