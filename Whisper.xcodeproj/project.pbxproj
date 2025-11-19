@@ -6,6 +6,11 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		BC0EE32A2EC7E57200726B6A /* RevenueCat in Frameworks */ = {isa = PBXBuildFile; productRef = BC0EE3292EC7E57200726B6A /* RevenueCat */; };
+		BC0EE32C2EC7E57200726B6A /* RevenueCatUI in Frameworks */ = {isa = PBXBuildFile; productRef = BC0EE32B2EC7E57200726B6A /* RevenueCatUI */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		BC363C212E1AA781007225BE /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -66,6 +71,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				BC0EE32C2EC7E57200726B6A /* RevenueCatUI in Frameworks */,
+				BC0EE32A2EC7E57200726B6A /* RevenueCat in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -135,6 +142,8 @@
 			);
 			name = Whisper;
 			packageProductDependencies = (
+				BC0EE3292EC7E57200726B6A /* RevenueCat */,
+				BC0EE32B2EC7E57200726B6A /* RevenueCatUI */,
 			);
 			productName = Whisper;
 			productReference = BC363C112E1AA77E007225BE /* Whisper.app */;
@@ -218,6 +227,9 @@
 			);
 			mainGroup = BC363C082E1AA77E007225BE;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				BC0EE3282EC7E57200726B6A /* XCRemoteSwiftPackageReference "purchases-ios-spm" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = BC363C122E1AA77E007225BE /* Products */;
 			projectDirPath = "";
@@ -589,6 +601,30 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		BC0EE3282EC7E57200726B6A /* XCRemoteSwiftPackageReference "purchases-ios-spm" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/RevenueCat/purchases-ios-spm.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 5.48.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		BC0EE3292EC7E57200726B6A /* RevenueCat */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = BC0EE3282EC7E57200726B6A /* XCRemoteSwiftPackageReference "purchases-ios-spm" */;
+			productName = RevenueCat;
+		};
+		BC0EE32B2EC7E57200726B6A /* RevenueCatUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = BC0EE3282EC7E57200726B6A /* XCRemoteSwiftPackageReference "purchases-ios-spm" */;
+			productName = RevenueCatUI;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = BC363C092E1AA77E007225BE /* Project object */;
 }

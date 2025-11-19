@@ -10,6 +10,9 @@ import SwiftData
 
 @main
 struct WhisperApp: App {
+    @StateObject private var paywallManager = PaywallManager.shared
+    @State private var showPaywallView = false
+    
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
             Recording.self,
@@ -26,9 +29,16 @@ struct WhisperApp: App {
 
     var body: some Scene {
         WindowGroup {
-            let viewModel = RecordingViewModel(modelContext: sharedModelContainer.mainContext)
-            RecordingView(viewModel: viewModel)
+            ZStack {
+                let viewModel = RecordingViewModel(modelContext: sharedModelContainer.mainContext)
+                RecordingView(viewModel: viewModel)
+                
+                if !paywallManager.isPremium {
+                    PayWallView()
+                }
+            }
         }
         .modelContainer(sharedModelContainer)
+        .environmentObject(paywallManager)
     }
 }
