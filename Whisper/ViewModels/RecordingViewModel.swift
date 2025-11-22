@@ -62,7 +62,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     private let networkMonitor = NetworkMonitor.shared
     
     // Track the current active recording during a session
-    private var activeRecording: Recording? = nil
+    @Published private(set) var activeRecording: Recording? = nil
     
     init(modelContext: ModelContext) {
         self.modelContext = modelContext
@@ -79,6 +79,14 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
             }
         }
         self.isOnline = networkMonitor.isOnline
+    }
+    
+    // Public accessor for segments (for UI bindings in Record and Detail screens)
+    func segments(for recording: Recording) -> [TranscriptionSegment] {
+        let descriptor = FetchDescriptor<TranscriptionSegment>()
+        let allSegments = (try? modelContext.fetch(descriptor)) ?? []
+        return allSegments.filter { $0.recording?.id == recording.id }
+            .sorted { $0.timestamp < $1.timestamp }
     }
     
     func requestPermission() {

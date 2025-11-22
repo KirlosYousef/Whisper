@@ -20,7 +20,7 @@ class PaywallManager: NSObject, ObservableObject {
     
     func setup() {
         // Purchases.logLevel = .debug
-        Purchases.configure(withAPIKey: "appl_SAieaPpwHTpDPvLokPfFNAWwYpo")
+        Purchases.configure(withAPIKey: "")
         Purchases.shared.delegate = self
         
         Task {
