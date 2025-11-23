@@ -198,6 +198,20 @@ public class SummaryService {
         return try await shared.answerQuestionWithOpenAI(transcript: transcript, question: question)
     }
     
+    // MARK: - General Command/Action
+    public static func performCommand(transcript: String, command: String) async -> String {
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        guard shared.apiKey != "YOUR_API_KEY_HERE", !transcript.isEmpty else {
+            return "Unable to process without AI. Please configure OpenAI API key."
+        }
+        do {
+            return try await shared.performCommandWithOpenAI(transcript: transcript, command: trimmed)
+        } catch {
+            return "Failed to process: \(error.localizedDescription)"
+        }
+    }
+    
     // MARK: - Keywords
     public static func extractKeywords(for transcript: String, maxKeywords: Int = 8) async -> [String] {
         guard shared.apiKey != "YOUR_API_KEY_HERE", !transcript.isEmpty else {
@@ -377,6 +391,59 @@ public class SummaryService {
 
 // MARK: - Private OpenAI helpers
 private extension SummaryService {
+    func performCommandWithOpenAI(transcript: String, command: String) async throws -> String {
+        let maxTranscriptLength = 6000
+        let truncatedTranscript = transcript.count > maxTranscriptLength
+            ? String(transcript.prefix(maxTranscriptLength)) + "..."
+            : transcript
+        
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 30.0
+        
+        let system = """
+        You operate on a conversation transcript. Perform the requested task (e.g., summarize, extract action items, extract keywords, translate, reformat, or answer questions) using ONLY the transcript. Respond concisely in plain text suitable for sharing. Avoid disclaimers.
+        """
+        let user = """
+        Transcript:
+        \(truncatedTranscript)
+        
+        Instruction:
+        \(command)
+        """
+        let body: [String: Any] = [
+            "model": model,
+            "messages": [
+                ["role": "system", "content": system],
+                ["role": "user", "content": user]
+            ],
+            "temperature": 0.3,
+            "max_tokens": 600
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 30.0
+        config.timeoutIntervalForResource = 60.0
+        let session = URLSession(configuration: config)
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+            let responseBody = String(data: data, encoding: .utf8) ?? "Unable to decode response"
+            throw NSError(domain: "SummaryService", code: 4, userInfo: [NSLocalizedDescriptionKey: "Command API error: \(responseBody)"])
+        }
+        struct OpenAIResponse: Decodable {
+            struct Choice: Decodable {
+                struct Message: Decodable { let content: String }
+                let message: Message
+            }
+            let choices: [Choice]
+        }
+        let decoded = try JSONDecoder().decode(OpenAIResponse.self, from: data)
+        let content = decoded.choices.first?.message.content.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return content
+    }
     func extractKeywordsWithOpenAI(transcript: String, maxKeywords: Int) async throws -> [String] {
         let maxTranscriptLength = 4000
         let truncatedTranscript = transcript.count > maxTranscriptLength

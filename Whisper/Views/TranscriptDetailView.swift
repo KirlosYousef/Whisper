@@ -9,9 +9,6 @@ struct TranscriptDetailView: View {
     @State private var showCopyAlert = false
     @State private var copyAlertMessage = ""
     @State private var qaRecording: Recording? = nil
-    @State private var qaQuestion: String = ""
-    @State private var qaAnswer: String? = nil
-    @State private var qaLoading: Bool = false
 	@State private var playingSegmentId: UUID? = nil
 	@State private var showSummaryToast: Bool = false
     @State private var keywordsLoading: Bool = false
@@ -42,10 +39,7 @@ struct TranscriptDetailView: View {
                         
                         Button {
                             qaRecording = recording
-                            qaQuestion = ""
-                            qaAnswer = nil
-                            qaLoading = false
-                        } label: { Label("Ask a Question", systemImage: "questionmark.bubble") }
+                        } label: { Label("Ask or Act", systemImage: "questionmark.bubble") }
                         
                         Menu("Export") {
                             Button {
@@ -234,39 +228,15 @@ struct TranscriptDetailView: View {
             Button("OK", role: .cancel) {}
         }
         .sheet(item: $qaRecording) { rec in
-            VStack(alignment: .leading, spacing: 16) {
-                Text("Ask a Question").font(.headline)
-                TextField("Type your question…", text: $qaQuestion).textFieldStyle(RoundedBorderTextFieldStyle())
-                if qaLoading {
-                    HStack { ProgressView(); Text("Answering…").foregroundColor(.secondary) }
-                } else if let answer = qaAnswer, !answer.isEmpty {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Answer").font(.subheadline).fontWeight(.medium)
-                        Text(answer).font(.body)
-                    }
+            AskActionSheet(
+                recording: rec,
+                run: { recording, prompt in
+                    await viewModel.performCommand(for: recording, prompt: prompt)
+                },
+                onDismiss: {
+                    qaRecording = nil
                 }
-                HStack {
-                    Button("Cancel") {
-                        qaRecording = nil
-                        qaQuestion = ""
-                        qaAnswer = nil
-                        qaLoading = false
-                    }
-                    Spacer()
-                    Button("Ask") {
-                        guard !qaQuestion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-                        qaLoading = true
-                        qaAnswer = nil
-                        Task {
-                            let answer = await viewModel.answerQuestion(for: rec, question: qaQuestion)
-                            qaAnswer = answer
-                            qaLoading = false
-                        }
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
-            }
-            .padding()
+            )
         }
     }
     

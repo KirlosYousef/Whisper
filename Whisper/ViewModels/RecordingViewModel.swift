@@ -386,6 +386,14 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         }
     }
     
+    // MARK: - Generic Ask/Act Command
+    @MainActor
+    func performCommand(for recording: Recording, prompt: String) async -> String {
+        let transcript = recording.fullTranscript
+        let result = await SummaryService.performCommand(transcript: transcript, command: prompt)
+        return result
+    }
+    
     var filteredRecordings: [Recording] {
         if searchText.isEmpty {
             return recordings
