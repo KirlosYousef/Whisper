@@ -14,136 +14,220 @@ struct TranscriptDetailView: View {
     @State private var qaLoading: Bool = false
 	@State private var playingSegmentId: UUID? = nil
 	@State private var showSummaryToast: Bool = false
+    @State private var keywordsLoading: Bool = false
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            RecordingHeaderCard(title: titleText, duration: recording.duration) {
-                Menu {
-                    Button {
-                        Task {
-                            let (summary, todos) = await SummaryService.generateSummary(for: recording.fullTranscript)
-                            recording.summary = summary
-                            recording.todoList = todos
-                            try? modelContext.save()
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 12) {
+                RecordingHeaderCard(title: titleText, duration: recording.duration) {
+                    Menu {
+                        Button {
+                            Task {
+                                await viewModel.generateFullSummary(for: recording)
+                            }
+                        } label: { Label("Generate Summary", systemImage: "text.badge.star") }
+                        
+                        Button {
+                            Task {
+                                keywordsLoading = true
+                                _ = await viewModel.extractKeywords(for: recording)
+                                keywordsLoading = false
+                                try? modelContext.save()
+                            }
+                        } label: { Label("Extract Keywords", systemImage: "tag") }
+                        
+                        Button {
+                            SummaryService.shareRecording(recording)
+                        } label: { Label("Share", systemImage: "square.and.arrow.up") }
+                        
+                        Button {
+                            qaRecording = recording
+                            qaQuestion = ""
+                            qaAnswer = nil
+                            qaLoading = false
+                        } label: { Label("Ask a Question", systemImage: "questionmark.bubble") }
+                        
+                        Menu("Export") {
+                            Button {
+                                SummaryService.shareRecording(recording, format: .markdown)
+                            } label: { Label("Share Markdown", systemImage: "square.and.arrow.up") }
+                            
+                            Button {
+                                SummaryService.shareRecording(recording, format: .text)
+                            } label: { Label("Share Text", systemImage: "square.and.arrow.up") }
+                            
+                            if let keywords = recording.keywords, !keywords.isEmpty {
+                                let hashtags = keywords.map { "#" + $0.replacingOccurrences(of: " ", with: "") }.joined(separator: " ")
+                                ShareLink(item: hashtags) {
+                                    Label("Share Hashtags", systemImage: "number")
+                                }
+                            } else {
+                                Button {
+                                    copyAlertMessage = "No keywords available to share"
+                                    showCopyAlert = true
+                                } label: { Label("Share Hashtags", systemImage: "number") }
+                            }
+                            
+                            if let keywords = recording.keywords, !keywords.isEmpty {
+                                ShareLink(item: keywords.joined(separator: ", ")) {
+                                    Label("Share Keywords", systemImage: "textformat")
+                                }
+                            } else {
+                                Button {
+                                    copyAlertMessage = "No keywords available to share"
+                                    showCopyAlert = true
+                                } label: { Label("Share Keywords", systemImage: "textformat") }
+                            }
                         }
-                    } label: { Label("Generate Summary", systemImage: "text.badge.star") }
-                    
-                    Button {
-                        SummaryService.shareRecording(recording)
-                    } label: { Label("Share", systemImage: "square.and.arrow.up") }
-                    
-                    Button {
-                        qaRecording = recording
-                        qaQuestion = ""
-                        qaAnswer = nil
-                        qaLoading = false
-                    } label: { Label("Ask a Question", systemImage: "questionmark.bubble") }
-                    
-                    Menu("Export") {
-                        Button {
-                            SummaryService.shareRecording(recording, format: .markdown)
-                        } label: { Label("Share Markdown", systemImage: "square.and.arrow.up") }
-                        
-                        Button {
-                            let md = SummaryService.exportString(for: recording, format: .markdown)
-                            UIPasteboard.general.string = md
-                            copyAlertMessage = "Markdown copied to clipboard"
-                            showCopyAlert = true
-                        } label: { Label("Copy Markdown", systemImage: "doc.on.doc") }
-                        
-                        Button {
-                            SummaryService.shareRecording(recording, format: .text)
-                        } label: { Label("Share Text", systemImage: "square.and.arrow.up") }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .foregroundColor(.primary)
+                            .rotationEffect(.degrees(90))
+                            .frame(width: 32, height: 32)
                     }
-                } label: {
-                    Image(systemName: "ellipsis.circle").foregroundColor(.primary)
                 }
-            }
-            
-            if let summary = recording.summary, !summary.isEmpty {
-                HStack {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Summary").font(.subheadline).fontWeight(.medium)
-                        Text(summary).font(.caption).foregroundColor(.secondary)
-                    }
-                    Spacer()
-                }
-                .frame(maxWidth: .infinity)
-                .card(color: Color(.label.withAlphaComponent(0.04)))
-            }
-            
-            if let todos = recording.todoList, !todos.isEmpty {
+                
+                // Summary with direct share
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Action Items").font(.subheadline).fontWeight(.medium)
-                    ForEach(todos, id: \.self) { todo in
-                        HStack(alignment: .top) {
-                            Text("•")
-                            Text(todo).font(.caption).foregroundColor(.secondary)
+                    let summaryText = (recording.summary ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                    let isGenerating = viewModel.isSummaryGenerating(for: recording)
+                    HStack {
+                        Text("Summary").font(.subheadline).fontWeight(.medium)
+                        Spacer()
+                        if isGenerating {
+                            ProgressView().scaleEffect(0.8)
+                        } else if !summaryText.isEmpty {
+                            ShareLink(item: summaryText) {
+                                Image(systemName: "arrowshape.turn.up.forward.fill")
+                                    .foregroundColor(.primary)
+                                    .frame(width: 32, height: 32)
+                            }
                         }
+                    }
+                    if !summaryText.isEmpty {
+                        Text(summaryText).font(.caption).foregroundColor(.secondary)
+                    } else if !isGenerating {
+                        Text("No summary yet").font(.caption).foregroundColor(.secondary)
+                    }
+                }
+                .card(color: Color(.label.withAlphaComponent(0.04)))
+                
+                // Keywords with direct share
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("Keywords").font(.subheadline).fontWeight(.medium)
+                        Spacer()
+                        if keywordsLoading {
+                            HStack(spacing: 6) {
+                                ProgressView().scaleEffect(0.8)
+                            }
+                        } else if let keywords = recording.keywords, !keywords.isEmpty {
+                            Menu {
+                                let hashtags = keywords.map { "#" + $0.replacingOccurrences(of: " ", with: "") }.joined(separator: " ")
+                                ShareLink(item: hashtags) {
+                                    Label("Share Hashtags", systemImage: "number")
+                                }
+                                ShareLink(item: keywords.joined(separator: ", ")) {
+                                    Label("Share Keywords", systemImage: "square.and.arrow.up")
+                                }
+                            } label: {
+                                Image(systemName: "arrowshape.turn.up.forward.fill")
+                                    .foregroundColor(.primary)
+                                    .frame(width: 32, height: 32)
+                            }
+                        } else {
+                            Button("Extract") {
+                                keywordsLoading = true
+                                Task {
+                                    _ = await viewModel.extractKeywords(for: recording)
+                                    try? modelContext.save()
+                                    keywordsLoading = false
+                                }
+                            }
+                            .font(.caption)
+                        }
+                    }
+                    if let keywords = recording.keywords, !keywords.isEmpty {
+                        KeywordChipsView(keywords: keywords)
+                    } else if !keywordsLoading {
+                        Text("No keywords yet").font(.caption).foregroundColor(.secondary)
                     }
                 }
                 .card()
-            }
-            
-			ScrollView {
-				let segs = viewModel.segments(for: recording)
-				LazyVStack(alignment: .leading, spacing: 10) {
-					ForEach(segs, id: \.id) { segment in
-						TranscriptSegmentCard(
-							isActive: playingSegmentId == segment.id,
-							timeRange: timeRange(for: segment, in: segs),
-							text: segment.text.isEmpty ? statusText(for: segment) : segment.text,
-							isPlaying: playingSegmentId == segment.id,
-							onPlayPause: {
-								if playingSegmentId == segment.id {
-									PlaybackService.shared.stop()
-									playingSegmentId = nil
-								} else {
-									viewModel.play(segment: segment)
-									playingSegmentId = segment.id
-								}
-							},
-							trailingMenu: {
-								Menu {
-									Button {
-										let text = segment.text
-										if !text.isEmpty {
-											Task {
-												let (summary, _) = await SummaryService.generateShortSummary(for: text)
-												copyAlertMessage = summary.isEmpty ? "No summary generated" : summary
-												showCopyAlert = true
-											}
-										}
-									} label: {
-										Label("Generate Summary", systemImage: "text.badge.star")
-									}
+                
+                if let todos = recording.todoList, !todos.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Action Items").font(.subheadline).fontWeight(.medium)
+                        ForEach(todos, id: \.self) { todo in
+                            HStack(alignment: .center) {
+                                Text("•")
+                                Text(todo).font(.caption).foregroundColor(.secondary)
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .card()
+                }
+                
+                let segs = viewModel.segments(for: recording)
+                LazyVStack(alignment: .leading, spacing: 10) {
+                    ForEach(segs, id: \.id) { segment in
+                        TranscriptSegmentCard(
+                            isActive: playingSegmentId == segment.id,
+                            timeRange: timeRange(for: segment, in: segs),
+                            text: segment.text.isEmpty ? statusText(for: segment) : segment.text,
+                            isPlaying: playingSegmentId == segment.id,
+                            onPlayPause: {
+                                if playingSegmentId == segment.id {
+                                    PlaybackService.shared.stop()
+                                    playingSegmentId = nil
+                                } else {
+                                    viewModel.play(segment: segment)
+                                    playingSegmentId = segment.id
+                                }
+                            },
+                            trailingMenu: {
+                                Menu {
+                                    Button {
+                                        let text = segment.text
+                                        if !text.isEmpty {
+                                            Task {
+                                                let (summary, _) = await SummaryService.generateShortSummary(for: text)
+                                                copyAlertMessage = summary.isEmpty ? "No summary generated" : summary
+                                                showCopyAlert = true
+                                            }
+                                        }
+                                    } label: {
+                                        Label("Generate Summary", systemImage: "text.badge.star")
+                                    }
                                     
                                     ShareLink(item: segment.text.isEmpty ? statusText(for: segment) : segment.text) {
                                         Label("Share Text", systemImage: "square.and.arrow.up")
                                     }
                                     
-									Button {
-										let text = segment.text
-										guard !text.isEmpty else { return }
-										UIPasteboard.general.string = text
-										copyAlertMessage = "Text copied"
-										showCopyAlert = true
-									} label: {
-										Label("Copy Text", systemImage: "doc.on.doc")
-									}
-								} label: {
-									Image(systemName: "ellipsis.circle").foregroundColor(.primary)
-								}
-							}
-						)
-						.card()
-					}
-				}
-				.padding(.horizontal, 0)
-			}
+                                    Button {
+                                        let text = segment.text
+                                        guard !text.isEmpty else { return }
+                                        UIPasteboard.general.string = text
+                                    } label: {
+                                        Label("Copy Text", systemImage: "doc.on.doc")
+                                    }
+                                } label: {
+                                    Image(systemName: "ellipsis")
+                                        .foregroundColor(.primary)
+                                        .rotationEffect(.degrees(90))
+                                        .frame(width: 32, height: 32)
+                                }
+                            }
+                        )
+                        .card()
+                    }
+                }
+                .padding(.horizontal, 0)
+            }
+            .padding(.horizontal)
         }
-        .padding(.horizontal)
-		.background(AppTheme.background(colorScheme).ignoresSafeArea())
+        .background(AppTheme.background(colorScheme).ignoresSafeArea())
         .navigationTitle(titleText)
         .navigationBarTitleDisplayMode(.inline)
         .alert(copyAlertMessage, isPresented: $showCopyAlert) {

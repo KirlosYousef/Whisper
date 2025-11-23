@@ -327,8 +327,31 @@ class AudioService: NSObject {
         
         do {
             try recordingSession.setActive(true)
-            audioEngine?.prepare()
-            try audioEngine?.start()
+            
+            // Ensure audio engine exists
+            if audioEngine == nil {
+                audioEngine = AVAudioEngine()
+            }
+            if inputNode == nil {
+                inputNode = audioEngine?.inputNode
+            }
+            guard let audioEngine = audioEngine, let inputNode = inputNode else { return }
+            
+            // Reinstall input tap to continue writing to the current audioFile
+            let inputFormat = inputNode.outputFormat(forBus: 0)
+            inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
+                self?.processAudioBuffer(buffer)
+            }
+            
+            audioEngine.prepare()
+            try audioEngine.start()
+            
+            // Re-arm segmentation timer to continue splitting after resume
+            segmentTimer?.invalidate()
+            segmentTimer = Timer.scheduledTimer(withTimeInterval: 20.0, repeats: false) { [weak self] _ in
+                self?.finishCurrentSegmentAndStartNew()
+            }
+            
             isRecording = true
             isPaused = false
         } catch {

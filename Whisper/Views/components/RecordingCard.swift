@@ -8,14 +8,16 @@
 import SwiftUI
 
 struct RecordingCard<Trailing: View, Accessory: View>: View {
-	let title: String
+    let title: String
+	let duration: String
 	let subtitle: String?
 	let trailing: () -> Trailing
 	let accessory: () -> Accessory
 	@Environment(\.colorScheme) private var colorScheme
 	
-	init(title: String, subtitle: String? = nil, @ViewBuilder trailing: @escaping () -> Trailing, @ViewBuilder accessory: @escaping () -> Accessory = { EmptyView() }) {
-		self.title = title
+	init(title: String, duration: String, subtitle: String? = nil, @ViewBuilder trailing: @escaping () -> Trailing, @ViewBuilder accessory: @escaping () -> Accessory = { EmptyView() }) {
+        self.title = title
+		self.duration = duration
 		self.subtitle = subtitle
 		self.trailing = trailing
 		self.accessory = accessory
@@ -25,6 +27,7 @@ struct RecordingCard<Trailing: View, Accessory: View>: View {
 		HStack(alignment: .center, spacing: 12) {
 			let bg = colorScheme == .dark ? Color.white.opacity(0.12) : Color.black.opacity(0.06)
 			let fg = colorScheme == .dark ? Color.white : Color.black
+            
 			RoundedRectangle(cornerRadius: AppTheme.smallRadius, style: .continuous)
 				.fill(bg)
 				.frame(width: 40, height: 40)
@@ -33,16 +36,24 @@ struct RecordingCard<Trailing: View, Accessory: View>: View {
 						.font(.system(size: 18, weight: .semibold))
 						.foregroundColor(fg)
 				)
+            
 			VStack(alignment: .leading, spacing: 2) {
-				Text(title)
-					.font(.app(.medium, size: 17))
-					.foregroundColor(.primary)
-					.lineLimit(1)
+                Text(title)
+                    .font(.app(.medium, size: 17))
+                    .foregroundColor(.primary)
+                    .lineLimit(1)
+                
 				if let subtitle = subtitle, !subtitle.isEmpty {
 					Text(subtitle)
 						.font(.caption)
 						.foregroundColor(.secondary)
+						.multilineTextAlignment(.leading)
+						.lineLimit(2)
 				}
+                
+                Text(duration)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
 			}
 			Spacer()
 			accessory()

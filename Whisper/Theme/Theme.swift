@@ -15,7 +15,7 @@ enum AppTheme {
 	
 	// Brand & backgrounds (from UI design)
 	static let primary = Color(hex: 0x2B8CEE) // #2B8CEE
-	// ChatGPT-like: pure white in light, matte black in dark
+    
 	static let backgroundLight = Color.white        // #FFFFFF
 	static let backgroundDark = Color(hex: 0x0A0A0A) // matte black ~ #0A0A0A
 	
@@ -33,11 +33,17 @@ struct CardBackground: ViewModifier {
 	@Environment(\.colorScheme) private var colorScheme
     
     var color: Color? = nil
+    var insets: EdgeInsets? = nil
     private var backgroundColor: Color { (color != nil) ? color! : AppTheme.cardBackground(colorScheme) }
+    private var contentInsets: EdgeInsets {
+        if let insets { return insets }
+        // Default system padding approximation
+        return EdgeInsets(top: 16, leading: 16, bottom: 16, trailing: 16)
+    }
     
     func body(content: Content) -> some View {
         content
-            .padding()
+            .padding(contentInsets)
 			.background(backgroundColor)
             .cornerRadius(AppTheme.cornerRadius)
             .overlay(
@@ -48,8 +54,8 @@ struct CardBackground: ViewModifier {
 }
 
 extension View {
-    func card(color: Color? = nil) -> some View {
-        modifier(CardBackground(color: color))
+    func card(color: Color? = nil, insets: EdgeInsets? = nil) -> some View {
+        modifier(CardBackground(color: color, insets: insets))
     }
 }
 

@@ -67,24 +67,45 @@ struct RecordScreen: View {
                         .card()
                     }
                 }
+                // Keep bottom content visible above mic and translation chip
+                .padding(.bottom, docked ? 220 : 120)
             }
         }
     }
     
     private var micArea: some View {
-        VStack {
-            MicButton(isRecording: viewModel.isRecording, audioLevel: viewModel.audioLevel) {
+		VStack {
+			HStack(spacing: 12) {
+				MicButton(isRecording: viewModel.isRecording, audioLevel: viewModel.audioLevel) {
+					if viewModel.isRecording {
+						viewModel.stopRecording()
+					} else {
+						viewModel.requestPermission()
+						if !viewModel.permissionDenied {
+							viewModel.startRecording()
+						}
+					}
+				}
+                
                 if viewModel.isRecording {
-                    viewModel.stopRecording()
-                } else {
-                    viewModel.requestPermission()
-                    if !viewModel.permissionDenied {
-                        viewModel.startRecording()
+                    Button {
+                        if viewModel.isPaused {
+                            viewModel.resumeRecording()
+                        } else {
+                            viewModel.pauseRecording()
+                        }
+                    } label: {
+                        Image(systemName: viewModel.isPaused ? "play.fill" : "pause.fill")
+                            .font(.title3)
+                            .padding()
                     }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .padding(.horizontal)
                 }
-            }
-            .padding(.vertical, 24)
-        }
+			}
+			.padding(.vertical, 24)
+		}
         .frame(maxWidth: .infinity)
         .frame(height: 140)
         .background(.clear)

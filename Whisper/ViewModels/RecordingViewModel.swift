@@ -47,6 +47,8 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     @Published var isOnline = true
     @Published var isRefreshing = false
     @Published var searchText = ""
+    // Track which recordings are currently generating summaries
+    @Published private var summaryLoadingRecordingIds: Set<UUID> = []
     @Published var selectedLanguage: String = "auto" {
         didSet {
             // Update transcription service language preference
@@ -132,21 +134,36 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
             DispatchQueue.main.async {
                 self.isRecording = false
                 self.isPaused = false
-                // Keep the active recording to continue showing segments after stop
-                if let rec = self.activeRecording {
-                    Task {
-                        let transcript = rec.fullTranscript
-                        if !transcript.isEmpty {
-                            let (summary, _) = await SummaryService.generateShortSummary(for: transcript)
-                            rec.summary = summary
-                            try? self.modelContext.save()
-                            self.fetchRecordings()
-                        }
-                    }
-                }
             }
             // The last segment will be handled by the delegate callback
         }
+    }
+    
+    func resumeRecording() {
+        audioService.resumeRecording()
+        isPaused = false
+        isRecording = true
+    }
+    
+    // MARK: - Summary Loading Helpers
+    func isSummaryGenerating(for recording: Recording) -> Bool {
+        summaryLoadingRecordingIds.contains(recording.id)
+    }
+    
+    @MainActor
+    func generateFullSummary(for recording: Recording) async {
+        // Avoid duplicate work
+        guard !isSummaryGenerating(for: recording) else { return }
+        summaryLoadingRecordingIds.insert(recording.id)
+        defer { summaryLoadingRecordingIds.remove(recording.id) }
+        
+        let transcript = recording.fullTranscript
+        guard !transcript.isEmpty else { return }
+        let (summary, todos) = await SummaryService.generateSummary(for: transcript)
+        recording.summary = summary
+        recording.todoList = todos
+        try? modelContext.save()
+        fetchRecordings()
     }
     
     // MARK: - AudioServiceDelegate
@@ -223,6 +240,8 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                                 }
                                 try? self?.modelContext.save()
                                 self?.fetchRecordings()
+                                // Attempt auto-summary now that this segment is completed
+                                self?.attemptAutoSummarizeIfComplete(for: rec)
                             }
                         } else {
                             Task { @MainActor in
@@ -238,12 +257,20 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                                         self?.fetchRecordings()
                                     }
                                 }
+                                // Persist and attempt auto-summary
+                                try? self?.modelContext.save()
+                                self?.fetchRecordings()
+                                self?.attemptAutoSummarizeIfComplete(for: rec)
                             }
                         }
                     }
                     if segment.status != "processing" {
                         try? self?.modelContext.save()
                         self?.fetchRecordings()
+                    // Attempt auto-summary if recording is finished and no pending segments
+                    if let rec = self?.activeRecording {
+                        self?.attemptAutoSummarizeIfComplete(for: rec)
+                    }
                     }
                 }
             }
@@ -303,6 +330,9 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                                         segment.text = translated
                                         try? self?.modelContext.save()
                                         self?.fetchRecordings()
+                                        if let rec = segment.recording {
+                                            self?.attemptAutoSummarizeIfComplete(for: rec)
+                                        }
                                     }
                                 } else {
                                     segment.status = "completed"
@@ -311,6 +341,9 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                             }
                             try? self?.modelContext.save()
                             self?.fetchRecordings()
+                            if let rec = segment.recording {
+                                self?.attemptAutoSummarizeIfComplete(for: rec)
+                            }
                         }
                     }
                 }
@@ -321,6 +354,24 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     func checkNetworkStatus() {
         // Already handled by NetworkMonitor; expose current state
         isOnline = networkMonitor.isOnline
+    }
+    
+    // MARK: - Auto Summary
+    private func attemptAutoSummarizeIfComplete(for recording: Recording) {
+        // Only summarize after recording session is stopped
+        guard !isRecording else { return }
+        // Avoid re-generating if we already have a non-empty summary
+        if let existing = recording.summary, !existing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return
+        }
+        guard let segments = fetchSegments(for: recording) else { return }
+        let hasPending = segments.contains { $0.status == "processing" || $0.status == "queued" }
+        guard !hasPending else { return }
+        let transcript = recording.fullTranscript
+        guard !transcript.isEmpty else { return }
+        Task { @MainActor in
+            await self.generateFullSummary(for: recording)
+        }
     }
     
     // MARK: - Q&A

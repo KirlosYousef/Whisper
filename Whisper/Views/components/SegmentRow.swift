@@ -30,10 +30,13 @@ struct SegmentRow: View {
                 .foregroundColor(.primary)
         } else if segment.status == "pending" || segment.status == "processing" {
             HStack {
-                ProgressView().scaleEffect(0.7)
                 Text("Processing…")
 					.font(.caption2)
 					.foregroundColor(.primary)
+                
+                Spacer()
+                
+                ProgressView().scaleEffect(0.7)
             }
         } else if segment.status == "failed" {
             HStack {

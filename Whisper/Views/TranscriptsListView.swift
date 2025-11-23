@@ -69,73 +69,30 @@ struct TranscriptsListView: View {
 							NavigationLink {
 								TranscriptDetailView(viewModel: viewModel, recording: recording)
 							} label: {
-								RecordingCard(
-									title: recording.title?.isEmpty == false ? recording.title! : "Record \(idx + 1)",
-									subtitle: timeLabel(recording.createdAt),
-									trailing: {
-										HStack(spacing: 8) {
-											if extractingRecordingId == recording.id {
-												ProgressView().scaleEffect(0.7)
+								VStack(alignment: .leading, spacing: 8) {
+									RecordingCard(
+										title: recording.title?.isEmpty == false ? recording.title! : "Record \(idx + 1)",
+                                        duration: timeLabel(recording.createdAt),
+										subtitle: {
+											recording.summary?.trimmingCharacters(in: .whitespacesAndNewlines)
+										}(),
+										trailing: {
+											HStack(spacing: 8) {
+												if extractingRecordingId == recording.id {
+													ProgressView().scaleEffect(0.7)
+												}
+												Image(systemName: "chevron.right")
+													.foregroundColor(.secondary)
 											}
-											Image(systemName: "chevron.right")
+										},
+										accessory: {
+											Text(formatDuration(recording.duration))
+												.font(.caption)
 												.foregroundColor(.secondary)
+												.monospacedDigit()
 										}
-									},
-									accessory: {
-										Menu {
-											Button {
-												Task {
-													let (summary, todos) = await SummaryService.generateSummary(for: recording.fullTranscript)
-													recording.summary = summary
-													recording.todoList = todos
-													try? modelContext.save()
-												}
-											} label: { Label("Generate Summary", systemImage: "text.badge.star") }
-											
-											Button {
-												Task {
-													extractingRecordingId = recording.id
-													let newKeywords = await viewModel.extractKeywords(for: recording)
-													extractingRecordingId = nil
-													copyAlertMessage = newKeywords.isEmpty ? "No keywords found (or API not configured)" : "Keywords extracted"
-													showCopyAlert = true
-												}
-											} label: { Label("Extract Keywords", systemImage: "tag") }
-											
-											Button {
-												SummaryService.shareRecording(recording)
-											} label: { Label("Share", systemImage: "square.and.arrow.up") }
-											
-											Menu("Export") {
-												Button {
-													let md = SummaryService.exportString(for: recording, format: .markdown)
-													UIPasteboard.general.string = md
-													copyAlertMessage = "Markdown copied to clipboard"
-													showCopyAlert = true
-												} label: { Label("Copy Markdown", systemImage: "doc.on.doc") }
-												Button {
-													SummaryService.shareRecording(recording, format: .markdown)
-												} label: { Label("Share Markdown", systemImage: "square.and.arrow.up") }
-												Button {
-													SummaryService.shareRecording(recording, format: .text)
-												} label: { Label("Share Text", systemImage: "square.and.arrow.up") }
-												Button {
-													if let keywords = recording.keywords, !keywords.isEmpty {
-														let hashtags = keywords.map { "#" + $0.replacingOccurrences(of: " ", with: "") }.joined(separator: " ")
-														UIPasteboard.general.string = hashtags
-														copyAlertMessage = "Hashtags copied to clipboard"
-														showCopyAlert = true
-													} else {
-														copyAlertMessage = "No keywords available to export"
-														showCopyAlert = true
-													}
-												} label: { Label("Copy Hashtags", systemImage: "number") }
-											}
-										} label: {
-											Image(systemName: "ellipsis.circle").foregroundColor(.primary)
-										}
-									}
-								)
+									)
+								}
 								.card()
 								.padding(.horizontal)
 							}
@@ -170,6 +127,12 @@ struct TranscriptsListView: View {
 		fmt.dateStyle = .none
 		fmt.timeStyle = .short
 		return fmt.string(from: date)
+	}
+	
+	private func formatDuration(_ t: TimeInterval) -> String {
+		let mins = Int(t) / 60
+		let secs = Int(t) % 60
+		return String(format: "%02d:%02d", mins, secs)
 	}
 }
 
