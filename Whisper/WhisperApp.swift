@@ -14,14 +14,14 @@ struct WhisperApp: App {
     @StateObject private var paywallManager = PaywallManager.shared
     @State private var showPaywallView = false
     @State private var selectedTab: Int = 0
+    @StateObject private var viewModel: RecordingViewModel
     
-    var sharedModelContainer: ModelContainer = {
+    static let sharedModelContainer: ModelContainer = {
         let schema = Schema([
             Recording.self,
             TranscriptionSegment.self,
         ])
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
-
         do {
             return try ModelContainer(for: schema, configurations: [modelConfiguration])
         } catch {
@@ -29,9 +29,13 @@ struct WhisperApp: App {
         }
     }()
 
+    init() {
+        // Initialize the shared RecordingViewModel once for the lifetime of the app
+        _viewModel = StateObject(wrappedValue: RecordingViewModel(modelContext: WhisperApp.sharedModelContainer.mainContext))
+    }
+
     var body: some Scene {
         WindowGroup {
-            let viewModel = RecordingViewModel(modelContext: sharedModelContainer.mainContext)
             ZStack {
                 TabView(selection: $selectedTab) {
                     NavigationStack {
@@ -68,7 +72,7 @@ struct WhisperApp: App {
 //                }
             }
         }
-        .modelContainer(sharedModelContainer)
+        .modelContainer(WhisperApp.sharedModelContainer)
         .environmentObject(paywallManager)
     }
 }

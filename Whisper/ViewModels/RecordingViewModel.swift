@@ -53,7 +53,8 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
             transcriptionService.preferredLanguage = selectedLanguage == "auto" ? nil : selectedLanguage
         }
     }
-    @Published var translationOverride: String? = nil
+    // Session-scoped translation language shared across tabs (resets on app relaunch)
+    @Published var sessionTranslationLanguage: String = Languages.autoCode
     
     private var audioService: AudioService
     private var modelContext: ModelContext
@@ -72,6 +73,8 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         self.transcriptionService = TranscriptionService()
         fetchRecordings()
         audioService.delegate = self
+        // Initialize session translation language from persisted default
+        self.sessionTranslationLanguage = SettingsStore().defaultTranslationLanguage
         // Observe network status changes
         networkMonitor.onStatusChange = { [weak self] online in
             guard let self = self else { return }
@@ -107,8 +110,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                     self.isRecording = true
                     self.isPaused = false
                     // Capture the effective target translation language for this session
-                    let settings = SettingsStore()
-                    let effective = self.translationOverride ?? settings.defaultTranslationLanguage
+                    let effective = self.sessionTranslationLanguage
                     self.activeTargetTranslationLanguage = (effective.lowercased() == "auto") ? nil : effective
                     // Create a new Recording for this session
                     let rec = Recording(duration: 0, filePath: filePath ?? UUID().uuidString, title: nil)

@@ -2,7 +2,7 @@ import SwiftUI
 import SwiftData
 
 struct SettingsView: View {
-    @StateObject var viewModel: RecordingViewModel
+    @ObservedObject var viewModel: RecordingViewModel
     @StateObject private var store = SettingsStore()
     @State private var showClearAll = false
     @Environment(\.colorScheme) private var colorScheme

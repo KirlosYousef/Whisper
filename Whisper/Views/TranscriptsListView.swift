@@ -3,12 +3,11 @@ import SwiftData
 
 struct TranscriptsListView: View {
     @Environment(\.modelContext) private var modelContext
-    @StateObject var viewModel: RecordingViewModel
+    @ObservedObject var viewModel: RecordingViewModel
 	@Binding var tabSelection: Int
     @State private var showCopyAlert = false
     @State private var copyAlertMessage = ""
     @State private var extractingRecordingId: UUID?
-	@StateObject private var settings = SettingsStore()
     
 	var body: some View {
 		VStack(spacing: 0) {
@@ -17,7 +16,7 @@ struct TranscriptsListView: View {
 		.navigationTitle("Transcripts")
 		.overlay(alignment: .bottom) {
 			VStack(spacing: 12) {
-				TranslationChip(language: $settings.defaultTranslationLanguage) { _ in }
+				TranslationChip(language: $viewModel.sessionTranslationLanguage) { _ in }
 				FAB(systemImage: "mic.fill") {
 					tabSelection = 1
 				}

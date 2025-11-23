@@ -4,9 +4,8 @@ import SwiftData
 struct RecordScreen: View {
     @Environment(\.modelContext) private var modelContext
 	@Environment(\.colorScheme) private var colorScheme
-    @StateObject var viewModel: RecordingViewModel
+    @ObservedObject var viewModel: RecordingViewModel
     @State private var docked = false
-	@StateObject private var settings = SettingsStore()
     
     var body: some View {
 		ZStack {
@@ -34,15 +33,9 @@ struct RecordScreen: View {
 		.onAppear {
 			viewModel.checkNetworkStatus()
 		}
-		.onDisappear {
-			viewModel.translationOverride = nil
-		}
 		.overlay(alignment: .bottom) {
 			VStack(spacing: 12) {
-				TranslationChip(language: Binding(
-					get: { viewModel.translationOverride ?? settings.defaultTranslationLanguage },
-					set: { viewModel.translationOverride = $0 }
-				)) { _ in }
+				TranslationChip(language: $viewModel.sessionTranslationLanguage) { _ in }
 			}
 			// Keep chip above the mic when docked
 			.padding(.bottom, docked ? 160 : 24)
