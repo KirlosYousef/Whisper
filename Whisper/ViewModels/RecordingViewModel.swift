@@ -47,7 +47,6 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     @Published var isOnline = true
     @Published var isRefreshing = false
     @Published var searchText = ""
-    @Published var showClearConfirmation = false
     @Published var selectedLanguage: String = "auto" {
         didSet {
             // Update transcription service language preference

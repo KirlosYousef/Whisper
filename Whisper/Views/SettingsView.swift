@@ -152,22 +152,11 @@ struct SettingsView: View {
                 get: { current },
                 set: { onChange($0) }
             )) {
-                Text("Auto-detect").tag("auto")
+                Text(Languages.autoDisplay).tag(Languages.autoCode)
                 Divider()
-                Text("Arabic").tag("ar")
-                Text("English").tag("en")
-                Text("French").tag("fr")
-                Text("Spanish").tag("es")
-                Text("German").tag("de")
-                Text("Chinese").tag("zh")
-                Text("Japanese").tag("ja")
-                Text("Korean").tag("ko")
-                Text("Russian").tag("ru")
-                Text("Portuguese").tag("pt")
-                Text("Italian").tag("it")
-                Text("Dutch").tag("nl")
-                Text("Turkish").tag("tr")
-                Text("Hindi").tag("hi")
+                ForEach(Languages.supported) { lang in
+                    Text(lang.name).tag(lang.code)
+                }
             }
         } label: {
             SettingsRow(
@@ -175,32 +164,12 @@ struct SettingsView: View {
                 iconColor: title.contains("Transcription") ? AppTheme.green500 : AppTheme.purple500,
                 title: title,
                 subtitle: nil,
-                trailingText: displayName(for: current)
+                trailingText: Languages.displayName(for: current)
             )
         }
         .buttonStyle(.plain)
     }
     
-    private func displayName(for code: String) -> String {
-        switch code {
-        case "auto": return "Auto"
-        case "ar": return "Arabic"
-        case "en": return "English"
-        case "fr": return "French"
-        case "es": return "Spanish"
-        case "de": return "German"
-        case "zh": return "Chinese"
-        case "ja": return "Japanese"
-        case "ko": return "Korean"
-        case "ru": return "Russian"
-        case "pt": return "Portuguese"
-        case "it": return "Italian"
-        case "nl": return "Dutch"
-        case "tr": return "Turkish"
-        case "hi": return "Hindi"
-        default: return code.uppercased()
-        }
-    }
 }
 
 

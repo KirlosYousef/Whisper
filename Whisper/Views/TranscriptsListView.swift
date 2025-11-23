@@ -154,22 +154,11 @@ struct TranscriptsListView: View {
     private var languageMenu: some View {
         Menu {
             Picker("Language", selection: $viewModel.selectedLanguage) {
-                Text("Auto-detect").tag("auto")
+				Text(Languages.autoDisplay).tag(Languages.autoCode)
                 Divider()
-                Text("Arabic").tag("ar")
-                Text("English").tag("en")
-                Text("French").tag("fr")
-                Text("Spanish").tag("es")
-                Text("German").tag("de")
-                Text("Chinese").tag("zh")
-                Text("Japanese").tag("ja")
-                Text("Korean").tag("ko")
-                Text("Russian").tag("ru")
-                Text("Portuguese").tag("pt")
-                Text("Italian").tag("it")
-                Text("Dutch").tag("nl")
-                Text("Turkish").tag("tr")
-                Text("Hindi").tag("hi")
+				ForEach(Languages.supported) { lang in
+					Text(lang.name).tag(lang.code)
+				}
             }
         } label: {
             Label("Language", systemImage: "globe")

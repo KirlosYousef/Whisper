@@ -45,7 +45,7 @@ public class SummaryService {
               targetCode.lowercased() != "auto" else {
             return text
         }
-        let targetLanguage = languageName(for: targetCode)
+        let targetLanguage = Languages.displayName(for: targetCode)
         do {
             var request = URLRequest(url: shared.endpoint)
             request.httpMethod = "POST"
@@ -87,27 +87,6 @@ public class SummaryService {
             return content.isEmpty ? text : content
         } catch {
             return text
-        }
-    }
-    
-    private static func languageName(for code: String) -> String {
-        switch code.lowercased() {
-        case "ar": return "Arabic"
-        case "en": return "English"
-        case "fr": return "French"
-        case "es": return "Spanish"
-        case "de": return "German"
-        case "zh": return "Chinese"
-        case "ja": return "Japanese"
-        case "ko": return "Korean"
-        case "ru": return "Russian"
-        case "pt": return "Portuguese"
-        case "it": return "Italian"
-        case "nl": return "Dutch"
-        case "tr": return "Turkish"
-        case "hi": return "Hindi"
-        default:
-            return code.uppercased()
         }
     }
     
