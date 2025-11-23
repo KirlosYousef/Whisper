@@ -12,32 +12,6 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 20) {
                 headerCard
                 
-                sectionLabel("STORAGE MANAGEMENT")
-                VStack(spacing: 0) {
-                    SettingsRow(
-                        iconName: "trash",
-                        iconColor: AppTheme.blue500,
-                        title: "Clean Cache",
-                        subtitle: "Clears temporary files",
-                        trailingText: nil,
-                        isDestructive: false
-                    ) {
-                        viewModel.cleanupProcessedAudioFiles()
-                    }
-                    Divider().padding(.leading, 64)
-                    SettingsRow(
-                        iconName: "trash.slash",
-                        iconColor: AppTheme.red500,
-                        title: "Clean All Transcripts",
-                        subtitle: "Permanently delete all",
-                        trailingText: nil,
-                        isDestructive: true
-                    ) {
-                        showClearAll = true
-                    }
-                }
-                .card()
-                
                 sectionLabel("GENERAL")
                 VStack(spacing: 0) {
                     languageMenuRow(
@@ -49,6 +23,30 @@ struct SettingsView: View {
                 }
                 .card()
                 
+                sectionLabel("STORAGE MANAGEMENT")
+                VStack(spacing: 0) {
+                    SettingsRow(
+                        iconName: "trash",
+                        title: "Clean Cache",
+                        subtitle: "Clears temporary files",
+                        trailingText: nil,
+                        isDestructive: false
+                    ) {
+                        viewModel.cleanupProcessedAudioFiles()
+                    }
+                    Divider().padding(.leading, 64)
+                    SettingsRow(
+                        iconName: "trash.slash",
+                        title: "Clean All Transcripts",
+                        subtitle: "Permanently delete all",
+                        trailingText: nil,
+                        isDestructive: true
+                    ) {
+                        showClearAll = true
+                    }
+                }
+                .card()
+                
                 sectionLabel("SUPPORT")
                 VStack(spacing: 0) {
                     Button {
@@ -56,7 +54,6 @@ struct SettingsView: View {
                     } label: {
                         SettingsRow(
                             iconName: "questionmark.circle.fill",
-                            iconColor: AppTheme.orange500,
                             title: "Help & FAQ",
                             subtitle: nil,
                             trailingText: nil
@@ -70,7 +67,6 @@ struct SettingsView: View {
                     } label: {
                         SettingsRow(
                             iconName: "headphones",
-                            iconColor: AppTheme.teal500,
                             title: "Contact Support",
                             subtitle: nil,
                             trailingText: nil
@@ -82,7 +78,6 @@ struct SettingsView: View {
                     } label: {
                         SettingsRow(
                             iconName: "lock.shield",
-                            iconColor: AppTheme.slate500,
                             title: "Privacy Policy",
                             subtitle: nil,
                             trailingText: nil
@@ -131,8 +126,8 @@ struct SettingsView: View {
                     .font(.app(.bold, size: 16))
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 12)
-                    .background(AppTheme.primary)
-                    .foregroundColor(.white)
+                    .background(Color.primary)
+                    .foregroundColor(Color(.systemBackground))
                     .cornerRadius(12)
             }
         }
@@ -161,7 +156,6 @@ struct SettingsView: View {
         } label: {
             SettingsRow(
                 iconName: title.contains("Transcription") ? "mic.fill" : "character.bubble",
-                iconColor: title.contains("Transcription") ? AppTheme.green500 : AppTheme.purple500,
                 title: title,
                 subtitle: nil,
                 trailingText: Languages.displayName(for: current)

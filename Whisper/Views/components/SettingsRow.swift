@@ -9,7 +9,6 @@ import SwiftUI
 
 struct SettingsRow: View {
 	let iconName: String
-	let iconColor: Color
 	let title: String
 	let subtitle: String?
 	let trailingText: String?

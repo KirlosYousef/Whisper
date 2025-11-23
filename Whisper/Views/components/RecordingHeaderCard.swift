@@ -27,7 +27,7 @@ struct RecordingHeaderCard<Trailing: View>: View {
             Spacer()
             trailing()
         }
-        .card()
+        .card(color: Color(.label.withAlphaComponent(0.04)))
     }
     
     private static func formatDuration(_ duration: TimeInterval) -> String {

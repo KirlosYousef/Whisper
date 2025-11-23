@@ -16,8 +16,10 @@ struct SegmentRow: View {
             }
             .buttonStyle(.plain)
             statusView
+            Spacer()
         }
         .padding(.vertical, 4)
+        .frame(maxWidth: .infinity)
     }
     
     @ViewBuilder

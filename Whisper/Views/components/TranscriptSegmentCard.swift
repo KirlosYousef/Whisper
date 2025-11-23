@@ -21,15 +21,15 @@ struct TranscriptSegmentCard<TrailingMenu: View>: View {
 			Button(action: onPlayPause) {
 				RoundedRectangle(cornerRadius: AppTheme.smallRadius, style: .continuous)
 					.fill(isActive
-						  ? (colorScheme == .dark ? Color.white : Color.black)
-						  : (colorScheme == .dark ? Color.white.opacity(0.15) : Color.black.opacity(0.15)))
+                          ? (Color(.label))
+						  : (Color(.label).opacity(0.15)))
 					.frame(width: 44, height: 44)
 					.overlay(
 						Image(systemName: isPlaying ? "pause.fill" : "play.fill")
 							.font(.system(size: 20, weight: .bold))
 							.foregroundColor(isActive
-											 ? (colorScheme == .dark ? .black : .white)
-											 : (colorScheme == .dark ? .black : .black))
+											 ? (Color(.systemBackground))
+                                             : (.black))
 					)
 			}
 			.buttonStyle(.plain)

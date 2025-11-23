@@ -24,9 +24,6 @@ struct TranscriptsListView: View {
 			.padding(.bottom, 24)
 		}
 		.toolbar {
-			ToolbarItem(placement: .navigationBarLeading) {
-				languageMenu
-			}
 			ToolbarItem(placement: .navigationBarTrailing) {
 				Button {
 					viewModel.refreshRecordings()
@@ -135,7 +132,7 @@ struct TranscriptsListView: View {
 												} label: { Label("Copy Hashtags", systemImage: "number") }
 											}
 										} label: {
-											Image(systemName: "ellipsis.circle").foregroundColor(.accentColor)
+											Image(systemName: "ellipsis.circle").foregroundColor(.primary)
 										}
 									}
 								)
@@ -148,20 +145,6 @@ struct TranscriptsListView: View {
 				}
 			}
 		}
-    }
-    
-    private var languageMenu: some View {
-        Menu {
-            Picker("Language", selection: $viewModel.selectedLanguage) {
-				Text(Languages.autoDisplay).tag(Languages.autoCode)
-                Divider()
-				ForEach(Languages.supported) { lang in
-					Text(lang.name).tag(lang.code)
-				}
-            }
-        } label: {
-            Label("Language", systemImage: "globe")
-        }
     }
     
     private var groupedRecordings: [Date: [Recording]] {

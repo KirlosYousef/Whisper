@@ -19,17 +19,6 @@ enum AppTheme {
 	static let backgroundLight = Color.white        // #FFFFFF
 	static let backgroundDark = Color(hex: 0x0A0A0A) // matte black ~ #0A0A0A
 	
-	// Tailwind-aligned palette used in the mockups
-	static let blue500 = Color(hex: 0x3B82F6)   // blue-500
-	static let green500 = Color(hex: 0x22C55E)  // green-500
-	static let purple500 = Color(hex: 0xA855F7) // purple-500
-	static let red500 = Color(hex: 0xEF4444)    // red-500
-	static let orange500 = Color(hex: 0xF97316) // orange-500
-	static let teal500 = Color(hex: 0x14B8A6)   // teal-500
-	static let slate500 = Color(hex: 0x64748B)  // slate-500
-	static let slate700 = Color(hex: 0x334155)  // slate-700
-	static let slate100 = Color(hex: 0xF1F5F9)  // slate-100
-	
 	/// Dynamic card background tuned for dark mode designs in the mockups
 	static func cardBackground(_ colorScheme: ColorScheme) -> Color {
 		background(colorScheme)
@@ -42,10 +31,14 @@ enum AppTheme {
 
 struct CardBackground: ViewModifier {
 	@Environment(\.colorScheme) private var colorScheme
+    
+    var color: Color? = nil
+    private var backgroundColor: Color { (color != nil) ? color! : AppTheme.cardBackground(colorScheme) }
+    
     func body(content: Content) -> some View {
         content
             .padding()
-			.background(AppTheme.cardBackground(colorScheme))
+			.background(backgroundColor)
             .cornerRadius(AppTheme.cornerRadius)
             .overlay(
                 RoundedRectangle(cornerRadius: AppTheme.cornerRadius)
@@ -55,8 +48,8 @@ struct CardBackground: ViewModifier {
 }
 
 extension View {
-    func card() -> some View {
-        modifier(CardBackground())
+    func card(color: Color? = nil) -> some View {
+        modifier(CardBackground(color: color))
     }
 }
 

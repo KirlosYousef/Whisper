@@ -32,38 +32,44 @@ struct TranscriptDetailView: View {
                         SummaryService.shareRecording(recording)
                     } label: { Label("Share", systemImage: "square.and.arrow.up") }
                     
-                    Menu("Export") {
-                        Button {
-                            let md = SummaryService.exportString(for: recording, format: .markdown)
-                            UIPasteboard.general.string = md
-                            copyAlertMessage = "Markdown copied to clipboard"
-                            showCopyAlert = true
-                        } label: { Label("Copy Markdown", systemImage: "doc.on.doc") }
-                        Button {
-                            SummaryService.shareRecording(recording, format: .markdown)
-                        } label: { Label("Share Markdown", systemImage: "square.and.arrow.up") }
-                        Button {
-                            SummaryService.shareRecording(recording, format: .text)
-                        } label: { Label("Share Text", systemImage: "square.and.arrow.up") }
-                    }
-                    
                     Button {
                         qaRecording = recording
                         qaQuestion = ""
                         qaAnswer = nil
                         qaLoading = false
                     } label: { Label("Ask a Question", systemImage: "questionmark.bubble") }
+                    
+                    Menu("Export") {
+                        Button {
+                            SummaryService.shareRecording(recording, format: .markdown)
+                        } label: { Label("Share Markdown", systemImage: "square.and.arrow.up") }
+                        
+                        Button {
+                            let md = SummaryService.exportString(for: recording, format: .markdown)
+                            UIPasteboard.general.string = md
+                            copyAlertMessage = "Markdown copied to clipboard"
+                            showCopyAlert = true
+                        } label: { Label("Copy Markdown", systemImage: "doc.on.doc") }
+                        
+                        Button {
+                            SummaryService.shareRecording(recording, format: .text)
+                        } label: { Label("Share Text", systemImage: "square.and.arrow.up") }
+                    }
                 } label: {
                     Image(systemName: "ellipsis.circle").foregroundColor(.primary)
                 }
             }
             
             if let summary = recording.summary, !summary.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
-					Text("Summary").font(.subheadline).fontWeight(.medium)
-					Text(summary).font(.caption).foregroundColor(.secondary)
+                HStack {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Summary").font(.subheadline).fontWeight(.medium)
+                        Text(summary).font(.caption).foregroundColor(.secondary)
+                    }
+                    Spacer()
                 }
-                .card()
+                .frame(maxWidth: .infinity)
+                .card(color: Color(.label.withAlphaComponent(0.04)))
             }
             
             if let todos = recording.todoList, !todos.isEmpty {
@@ -99,9 +105,6 @@ struct TranscriptDetailView: View {
 							},
 							trailingMenu: {
 								Menu {
-									ShareLink(item: segment.text.isEmpty ? statusText(for: segment) : segment.text) {
-										Label("Share Segment", systemImage: "square.and.arrow.up")
-									}
 									Button {
 										let text = segment.text
 										if !text.isEmpty {
@@ -114,6 +117,11 @@ struct TranscriptDetailView: View {
 									} label: {
 										Label("Generate Summary", systemImage: "text.badge.star")
 									}
+                                    
+                                    ShareLink(item: segment.text.isEmpty ? statusText(for: segment) : segment.text) {
+                                        Label("Share Text", systemImage: "square.and.arrow.up")
+                                    }
+                                    
 									Button {
 										let text = segment.text
 										guard !text.isEmpty else { return }
@@ -124,9 +132,7 @@ struct TranscriptDetailView: View {
 										Label("Copy Text", systemImage: "doc.on.doc")
 									}
 								} label: {
-									Image(systemName: "ellipsis.circle")
-										.font(.system(size: 18, weight: .semibold))
-										.foregroundColor(.primary)
+									Image(systemName: "ellipsis.circle").foregroundColor(.primary)
 								}
 							}
 						)
