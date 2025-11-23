@@ -36,6 +36,81 @@ public class SummaryService {
         }
     }
     
+    // MARK: - Translation
+    public static func translate(text: String, to targetCode: String) async -> String {
+        guard !text.isEmpty else { return "" }
+        // If no API key or auto/no-op, return original text
+        guard shared.apiKey != "YOUR_API_KEY_HERE",
+              !targetCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              targetCode.lowercased() != "auto" else {
+            return text
+        }
+        let targetLanguage = languageName(for: targetCode)
+        do {
+            var request = URLRequest(url: shared.endpoint)
+            request.httpMethod = "POST"
+            request.setValue("Bearer \(shared.apiKey)", forHTTPHeaderField: "Authorization")
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.timeoutInterval = 30.0
+            
+            let system = "You are a precise translator. Output ONLY the translated text. No extra notes."
+            let user = "Translate the following text to \(targetLanguage). Return only the translated text:\n\n\(text)"
+            let body: [String: Any] = [
+                "model": shared.model,
+                "messages": [
+                    ["role": "system", "content": system],
+                    ["role": "user", "content": user]
+                ],
+                "temperature": 0.2,
+                "max_tokens": 4000
+            ]
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            
+            let config = URLSessionConfiguration.default
+            config.timeoutIntervalForRequest = 30.0
+            config.timeoutIntervalForResource = 60.0
+            let session = URLSession(configuration: config)
+            
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                return text
+            }
+            struct OpenAIResponse: Decodable {
+                struct Choice: Decodable {
+                    struct Message: Decodable { let content: String }
+                    let message: Message
+                }
+                let choices: [Choice]
+            }
+            let decoded = try JSONDecoder().decode(OpenAIResponse.self, from: data)
+            let content = decoded.choices.first?.message.content.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return content.isEmpty ? text : content
+        } catch {
+            return text
+        }
+    }
+    
+    private static func languageName(for code: String) -> String {
+        switch code.lowercased() {
+        case "ar": return "Arabic"
+        case "en": return "English"
+        case "fr": return "French"
+        case "es": return "Spanish"
+        case "de": return "German"
+        case "zh": return "Chinese"
+        case "ja": return "Japanese"
+        case "ko": return "Korean"
+        case "ru": return "Russian"
+        case "pt": return "Portuguese"
+        case "it": return "Italian"
+        case "nl": return "Dutch"
+        case "tr": return "Turkish"
+        case "hi": return "Hindi"
+        default:
+            return code.uppercased()
+        }
+    }
+    
     // Public static methods
     static func shareRecording(_ recording: Recording) {
         let text = exportString(for: recording, format: .text)

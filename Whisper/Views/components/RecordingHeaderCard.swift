@@ -1,3 +1,10 @@
+//
+//  RecordingHeaderCard.swift
+//  Whisper
+//
+//  Created by Kirlos Yousef on 22/11/2025.
+//
+
 import SwiftUI
 
 struct RecordingHeaderCard<Trailing: View>: View {

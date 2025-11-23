@@ -3,7 +3,6 @@ import SwiftData
 
 struct TranscriptsListView: View {
     @Environment(\.modelContext) private var modelContext
-	@Environment(\.colorScheme) private var colorScheme
     @StateObject var viewModel: RecordingViewModel
 	@Binding var tabSelection: Int
     @State private var showCopyAlert = false
@@ -15,7 +14,6 @@ struct TranscriptsListView: View {
 		VStack(spacing: 0) {
 			content
 		}
-		.background(AppTheme.background(colorScheme).ignoresSafeArea())
 		.navigationTitle("Transcripts")
 		.overlay(alignment: .bottom) {
 			VStack(spacing: 12) {
@@ -84,7 +82,7 @@ struct TranscriptsListView: View {
 												ProgressView().scaleEffect(0.7)
 											}
 											Image(systemName: "chevron.right")
-												.foregroundColor((colorScheme == .dark ? Color.white : .black).opacity(0.6))
+												.foregroundColor(.secondary)
 										}
 									},
 									accessory: {
@@ -138,7 +136,7 @@ struct TranscriptsListView: View {
 												} label: { Label("Copy Hashtags", systemImage: "number") }
 											}
 										} label: {
-											Image(systemName: "ellipsis.circle").foregroundColor(.primary)
+											Image(systemName: "ellipsis.circle").foregroundColor(.accentColor)
 										}
 									}
 								)

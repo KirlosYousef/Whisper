@@ -41,14 +41,6 @@ struct SettingsView: View {
                 sectionLabel("GENERAL")
                 VStack(spacing: 0) {
                     languageMenuRow(
-                        title: "Transcription Language",
-                        current: store.transcriptionLanguage
-                    ) { newValue in
-                        store.transcriptionLanguage = newValue
-                        viewModel.selectedLanguage = newValue
-                    }
-                    Divider().padding(.leading, 64)
-                    languageMenuRow(
                         title: "Default Translation",
                         current: store.defaultTranslationLanguage
                     ) { newValue in
@@ -105,9 +97,6 @@ struct SettingsView: View {
         }
         .background(AppTheme.background(colorScheme).ignoresSafeArea())
         .navigationTitle("Settings")
-        .onAppear {
-            viewModel.selectedLanguage = store.transcriptionLanguage
-        }
         .alert("Clear All Recordings?", isPresented: $showClearAll) {
             Button("Delete All", role: .destructive) {
                 viewModel.clearAllRecordings()

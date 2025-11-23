@@ -54,6 +54,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
             transcriptionService.preferredLanguage = selectedLanguage == "auto" ? nil : selectedLanguage
         }
     }
+    @Published var translationOverride: String? = nil
     
     private var audioService: AudioService
     private var modelContext: ModelContext
@@ -63,6 +64,8 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     
     // Track the current active recording during a session
     @Published private(set) var activeRecording: Recording? = nil
+    // Effective translation language for this session (captured at start)
+    private(set) var activeTargetTranslationLanguage: String? = nil
     
     init(modelContext: ModelContext) {
         self.modelContext = modelContext
@@ -104,6 +107,10 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                 DispatchQueue.main.async {
                     self.isRecording = true
                     self.isPaused = false
+                    // Capture the effective target translation language for this session
+                    let settings = SettingsStore()
+                    let effective = self.translationOverride ?? settings.defaultTranslationLanguage
+                    self.activeTargetTranslationLanguage = (effective.lowercased() == "auto") ? nil : effective
                     // Create a new Recording for this session
                     let rec = Recording(duration: 0, filePath: filePath ?? UUID().uuidString, title: nil)
                     self.modelContext.insert(rec)
@@ -124,7 +131,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
             DispatchQueue.main.async {
                 self.isRecording = false
                 self.isPaused = false
-                // Clear the active recording when session ends
+                // Keep the active recording to continue showing segments after stop
                 if let rec = self.activeRecording {
                     Task {
                         let transcript = rec.fullTranscript
@@ -136,7 +143,6 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                         }
                     }
                 }
-                self.activeRecording = nil
             }
             // The last segment will be handled by the delegate callback
         }
@@ -198,22 +204,46 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                         }
                         segment.text = ""
                     } else if let text = text {
-                        segment.status = "completed"
-                        segment.text = text
-                        // Set the title as soon as the first segment is completed and title is not set
-                        if rec.title == nil && !text.isEmpty {
-                            Task {
-                                let (shortTitle, _) = await SummaryService.generateShortSummary(for: text)
-                                DispatchQueue.main.async {
-                                    rec.title = shortTitle
-                                    try? self?.modelContext.save()
-                                    self?.fetchRecordings()
+                        // Translate to the session's target language if specified
+                        if let target = self?.activeTargetTranslationLanguage, !target.isEmpty {
+                            Task { @MainActor in
+                                let translated = await SummaryService.translate(text: text, to: target)
+                                segment.status = "completed"
+                                segment.text = translated
+                                // Set the title as soon as first segment is ready
+                                if rec.title == nil && !translated.isEmpty {
+                                    let translatedCopy = translated
+                                    Task { @MainActor in
+                                        let (shortTitle, _) = await SummaryService.generateShortSummary(for: translatedCopy)
+                                        rec.title = shortTitle
+                                        try? self?.modelContext.save()
+                                        self?.fetchRecordings()
+                                    }
+                                }
+                                try? self?.modelContext.save()
+                                self?.fetchRecordings()
+                            }
+                        } else {
+                            Task { @MainActor in
+                                segment.status = "completed"
+                                segment.text = text
+                                // Set the title as soon as the first segment is completed and title is not set
+                                if rec.title == nil && !text.isEmpty {
+                                    let textCopy = text
+                                    Task { @MainActor in
+                                        let (shortTitle, _) = await SummaryService.generateShortSummary(for: textCopy)
+                                        rec.title = shortTitle
+                                        try? self?.modelContext.save()
+                                        self?.fetchRecordings()
+                                    }
                                 }
                             }
                         }
                     }
-                    try? self?.modelContext.save()
-                    self?.fetchRecordings()
+                    if segment.status != "processing" {
+                        try? self?.modelContext.save()
+                        self?.fetchRecordings()
+                    }
                 }
             }
         } else {
@@ -263,8 +293,20 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                                 segment.text = ""
                                 self?.errorMessage = "Transcription failed: \(error.localizedDescription)"
                             } else if let text = text {
-                                segment.status = "completed"
-                                segment.text = text
+                                // Use default translation language for queued items
+                                let defaultLang = SettingsStore().defaultTranslationLanguage
+                                if !defaultLang.isEmpty && defaultLang.lowercased() != "auto" {
+                                    Task { @MainActor in
+                                        let translated = await SummaryService.translate(text: text, to: defaultLang)
+                                        segment.status = "completed"
+                                        segment.text = translated
+                                        try? self?.modelContext.save()
+                                        self?.fetchRecordings()
+                                    }
+                                } else {
+                                    segment.status = "completed"
+                                    segment.text = text
+                                }
                             }
                             try? self?.modelContext.save()
                             self?.fetchRecordings()
@@ -398,5 +440,4 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         }
     }
 }
-
 

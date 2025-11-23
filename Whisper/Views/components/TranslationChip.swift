@@ -1,3 +1,10 @@
+//
+//  TranslationChip.swift
+//  Whisper
+//
+//  Created by Kirlos Yousef on 22/11/2025.
+//
+
 import SwiftUI
 
 struct TranslationChip: View {
