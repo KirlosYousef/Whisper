@@ -13,7 +13,10 @@ struct FAB: View {
 	@Environment(\.colorScheme) private var colorScheme
 	
 	var body: some View {
-		Button(action: action) {
+		Button(action: {
+			HapticsManager.shared.impact(.light)
+			action()
+		}) {
 			Image(systemName: systemImage)
 				.font(.system(size: 28, weight: .bold))
 				.foregroundColor(colorScheme == .dark ? .black : .white)

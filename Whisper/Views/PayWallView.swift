@@ -14,6 +14,9 @@ struct PayWallView: View {
     
     var body: some View {
         PaywallView(displayCloseButton: displayCloseButton)
+            .onAppear {
+                HapticsManager.shared.impact(.light)
+            }
     }
 }
 

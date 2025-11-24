@@ -66,10 +66,18 @@ struct WhisperApp: App {
                     .tag(2)
                 }
                 .tint(.primary)
+                .onAppear {
+                    HapticsManager.shared.prepare()
+                }
+                .onChange(of: paywallManager.isPremium) { _, isPremium in
+                    if isPremium {
+                        HapticsManager.shared.notification(.success)
+                    }
+                }
                 
-//                if !paywallManager.isPremium {
-//                    PayWallView()
-//                }
+                if !paywallManager.isPremium {
+                    PayWallView()
+                }
             }
         }
         .modelContainer(WhisperApp.sharedModelContainer)

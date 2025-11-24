@@ -31,7 +31,7 @@ struct TranscriptDetailView: View {
                                 keywordsLoading = false
                                 try? modelContext.save()
                             }
-                        } label: { Label("Extract Keywords", systemImage: "tag") }
+                        } label: { Label("Extract Keywords", systemImage: "textformat") }
                         
                         Button {
                             SummaryService.shareRecording(recording)
@@ -122,7 +122,7 @@ struct TranscriptDetailView: View {
                                     Label("Share Hashtags", systemImage: "number")
                                 }
                                 ShareLink(item: keywords.joined(separator: ", ")) {
-                                    Label("Share Keywords", systemImage: "square.and.arrow.up")
+                                    Label("Share Keywords", systemImage: "textformat")
                                 }
                             } label: {
                                 Image(systemName: "arrowshape.turn.up.forward.fill")
@@ -203,6 +203,7 @@ struct TranscriptDetailView: View {
                                         let text = segment.text
                                         guard !text.isEmpty else { return }
                                         UIPasteboard.general.string = text
+                                        HapticsManager.shared.notification(.success)
                                     } label: {
                                         Label("Copy Text", systemImage: "doc.on.doc")
                                     }

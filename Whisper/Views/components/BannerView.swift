@@ -40,6 +40,9 @@ struct BannerView: View {
         .padding()
 		.background((colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.06)))
         .cornerRadius(AppTheme.smallRadius)
+        .onAppear {
+            HapticsManager.shared.notification(.warning)
+        }
     }
 }
 

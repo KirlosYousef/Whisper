@@ -7,7 +7,10 @@ struct SegmentRow: View {
     
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
-            Button(action: play) {
+            Button(action: {
+				HapticsManager.shared.impact(.light)
+				play()
+			}) {
                 Text(timeLabel(segment.timestamp))
                     .font(.caption)
                     .foregroundColor(.secondary)

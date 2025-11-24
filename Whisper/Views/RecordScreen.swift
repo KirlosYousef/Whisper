@@ -33,6 +33,11 @@ struct RecordScreen: View {
 		.onAppear {
 			viewModel.checkNetworkStatus()
 		}
+		.onChange(of: viewModel.errorMessage) { _, newValue in
+			if newValue != nil {
+				HapticsManager.shared.notification(.error)
+			}
+		}
 		.overlay(alignment: .bottom) {
 			VStack(spacing: 12) {
 				TranslationChip(language: $viewModel.sessionTranslationLanguage) { _ in }
@@ -89,6 +94,7 @@ struct RecordScreen: View {
                 
                 if viewModel.isRecording {
                     Button {
+						HapticsManager.shared.selection()
                         if viewModel.isPaused {
                             viewModel.resumeRecording()
                         } else {

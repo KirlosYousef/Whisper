@@ -19,7 +19,12 @@ struct SettingsView: View {
                         current: store.defaultTranslationLanguage
                     ) { newValue in
                         store.defaultTranslationLanguage = newValue
+                        HapticsManager.shared.selection()
                     }
+                    Divider().padding(.leading, 64)
+                    Toggle("Haptics", isOn: $store.hapticsEnabled)
+                        .padding(.horizontal)
+                        .padding(.vertical, 10)
                 }
                 .card()
                 
@@ -108,27 +113,24 @@ struct SettingsView: View {
             HStack(spacing: 12) {
                 Circle()
                     .fill(Color.gray.opacity(0.25))
-                    .frame(width: 72, height: 72)
-                    .overlay(Image(systemName: "person.fill").font(.system(size: 28)).foregroundColor(.secondary))
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Free User")
-                        .font(.app(.bold, size: 22))
-                    Text("Account")
+                    .frame(width: 56, height: 56)
+                    .overlay(
+                        Image(systemName: "checkmark.seal.fill")
+                            .font(.system(size: 26, weight: .semibold))
+                            .foregroundColor(AppTheme.primary)
+                    )
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
+                        Text("Premium")
+                            .font(.app(.bold, size: 20))
+                        
+                        Spacer()
+                    }
+                    Text("Your plan is active")
                         .font(.callout)
                         .foregroundColor(.secondary)
                 }
                 Spacer()
-            }
-            Button {
-                UserDefaults.standard.set(true, forKey: "showPaywall")
-            } label: {
-                Text("Upgrade to Premium")
-                    .font(.app(.bold, size: 16))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 12)
-                    .background(Color.primary)
-                    .foregroundColor(Color(.systemBackground))
-                    .cornerRadius(12)
             }
         }
         .card()

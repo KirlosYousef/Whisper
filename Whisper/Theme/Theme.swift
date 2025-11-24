@@ -14,9 +14,9 @@ enum AppTheme {
 	static let accent = Color.accentColor
 	
 	// Brand & backgrounds (from UI design)
-	static let primary = Color(hex: 0x2B8CEE) // #2B8CEE
+    static let primary = Color(.label)
     
-	static let backgroundLight = Color.white        // #FFFFFF
+	static let backgroundLight = Color.white
 	static let backgroundDark = Color(hex: 0x0A0A0A) // matte black ~ #0A0A0A
 	
 	/// Dynamic card background tuned for dark mode designs in the mockups

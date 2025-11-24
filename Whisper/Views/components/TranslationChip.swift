@@ -36,6 +36,7 @@ struct TranslationChip: View {
 			.overlay(Capsule().stroke((colorScheme == .dark ? Color.white : Color.black).opacity(0.15), lineWidth: 1))
 		}
 		.onChange(of: language) { _, newValue in
+			HapticsManager.shared.selection()
 			onChange(newValue)
 		}
 		.accessibilityLabel(Text("Translate to \(Languages.displayName(for: language))"))

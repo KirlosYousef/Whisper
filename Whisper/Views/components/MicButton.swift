@@ -20,7 +20,10 @@ struct MicButton: View {
     }
     
     var body: some View {
-        Button(action: action) {
+        Button(action: {
+			HapticsManager.shared.impact(.medium)
+			action()
+		}) {
             ZStack {
                 if isRecording {
                     Circle()

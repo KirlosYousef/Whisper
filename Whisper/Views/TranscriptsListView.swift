@@ -26,6 +26,7 @@ struct TranscriptsListView: View {
 		.toolbar {
 			ToolbarItem(placement: .navigationBarTrailing) {
 				Button {
+					HapticsManager.shared.selection()
 					viewModel.refreshRecordings()
 				} label: {
 					Image(systemName: "arrow.clockwise")
@@ -36,6 +37,11 @@ struct TranscriptsListView: View {
 		.onAppear {
 			viewModel.fetchRecordings()
 			viewModel.checkNetworkStatus()
+		}
+		.onChange(of: viewModel.errorMessage) { _, newValue in
+			if newValue != nil {
+				HapticsManager.shared.notification(.error)
+			}
 		}
 		.alert(copyAlertMessage, isPresented: $showCopyAlert) {
 			Button("OK", role: .cancel) {}

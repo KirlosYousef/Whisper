@@ -18,7 +18,10 @@ struct TranscriptSegmentCard<TrailingMenu: View>: View {
 	
 	var body: some View {
 		HStack(alignment: .top, spacing: 12) {
-			Button(action: onPlayPause) {
+			Button(action: {
+				HapticsManager.shared.selection()
+				onPlayPause()
+			}) {
 				RoundedRectangle(cornerRadius: AppTheme.smallRadius, style: .continuous)
 					.fill(isActive
                           ? (Color(.label))

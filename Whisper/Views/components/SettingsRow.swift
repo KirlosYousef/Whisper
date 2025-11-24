@@ -17,7 +17,10 @@ struct SettingsRow: View {
 	@Environment(\.colorScheme) private var colorScheme
 	
 	var body: some View {
-		Button(action: { action?() }) {
+		Button(action: { 
+			HapticsManager.shared.selection()
+			action?() 
+		}) {
 			HStack(spacing: 12) {
 				let bg = colorScheme == .dark ? Color.white.opacity(0.12) : Color.black.opacity(0.06)
 				let fg = colorScheme == .dark ? Color.white : Color.black
