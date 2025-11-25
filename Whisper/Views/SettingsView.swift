@@ -1,3 +1,10 @@
+//
+//  SettingsView.swift
+//  Whisper
+//
+//  Created by Kirlos Yousef on 18/11/2025.
+//
+
 import SwiftUI
 import SwiftData
 
@@ -5,6 +12,7 @@ struct SettingsView: View {
     @ObservedObject var viewModel: RecordingViewModel
     @StateObject private var store = SettingsStore()
     @State private var showClearAll = false
+    @State private var showCleanCacheAlert = false
     @Environment(\.colorScheme) private var colorScheme
     
     var body: some View {
@@ -22,9 +30,17 @@ struct SettingsView: View {
                         HapticsManager.shared.selection()
                     }
                     Divider().padding(.leading, 64)
-                    Toggle("Haptics", isOn: $store.hapticsEnabled)
-                        .padding(.horizontal)
-                        .padding(.vertical, 10)
+                    Button {
+                        store.hapticsEnabled.toggle()
+                        HapticsManager.shared.selection()
+                    } label: {
+                        SettingsRow(
+                            iconName: "iphone.radiowaves.left.and.right",
+                            title: "Haptics",
+                            trailingView: Toggle("", isOn: $store.hapticsEnabled),
+                            hasChevron: false)
+                    }
+                    .buttonStyle(.plain)
                 }
                 .card()
                 
@@ -34,18 +50,16 @@ struct SettingsView: View {
                         iconName: "trash",
                         title: "Clean Cache",
                         subtitle: "Clears temporary files",
-                        trailingText: nil,
-                        isDestructive: false
+                        hasChevron: false
                     ) {
-                        viewModel.cleanupProcessedAudioFiles()
+                        showCleanCacheAlert = true
                     }
                     Divider().padding(.leading, 64)
                     SettingsRow(
                         iconName: "trash.slash",
                         title: "Clean All Transcripts",
                         subtitle: "Permanently delete all",
-                        trailingText: nil,
-                        isDestructive: true
+                        hasChevron: false
                     ) {
                         showClearAll = true
                     }
@@ -60,7 +74,6 @@ struct SettingsView: View {
                         SettingsRow(
                             iconName: "questionmark.circle.fill",
                             title: "Help & FAQ",
-                            subtitle: nil,
                             trailingText: nil
                         )
                     }
@@ -73,7 +86,6 @@ struct SettingsView: View {
                         SettingsRow(
                             iconName: "headphones",
                             title: "Contact Support",
-                            subtitle: nil,
                             trailingText: nil
                         )
                     }
@@ -83,9 +95,7 @@ struct SettingsView: View {
                     } label: {
                         SettingsRow(
                             iconName: "lock.shield",
-                            title: "Privacy Policy",
-                            subtitle: nil,
-                            trailingText: nil
+                            title: "Privacy Policy"
                         )
                     }
                 }
@@ -97,6 +107,14 @@ struct SettingsView: View {
         }
         .background(AppTheme.background(colorScheme).ignoresSafeArea())
         .navigationTitle("Settings")
+        .alert("Clear Cache?", isPresented: $showCleanCacheAlert) {
+            Button("Delete Cache", role: .destructive) {
+                viewModel.cleanupProcessedAudioFiles()
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("This clears temporary audio files used for processing. Your recordings and transcripts will not be deleted.")
+        }
         .alert("Clear All Recordings?", isPresented: $showClearAll) {
             Button("Delete All", role: .destructive) {
                 viewModel.clearAllRecordings()
@@ -159,7 +177,6 @@ struct SettingsView: View {
             SettingsRow(
                 iconName: title.contains("Transcription") ? "mic.fill" : "character.bubble",
                 title: title,
-                subtitle: nil,
                 trailingText: Languages.displayName(for: current)
             )
         }

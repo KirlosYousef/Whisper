@@ -1,17 +1,26 @@
+//
+//  TranscriptDetailView.swift
+//  Whisper
+//
+//  Created by Kirlos Yousef on 18/11/2025.
+//
+
 import SwiftUI
 import SwiftData
 
 struct TranscriptDetailView: View {
     @Environment(\.modelContext) private var modelContext
-	@Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorScheme) private var colorScheme
     @StateObject var viewModel: RecordingViewModel
+    
     let recording: Recording
     @State private var showCopyAlert = false
     @State private var copyAlertMessage = ""
     @State private var qaRecording: Recording? = nil
-	@State private var playingSegmentId: UUID? = nil
-	@State private var showSummaryToast: Bool = false
+    @State private var playingSegmentId: UUID? = nil
+    @State private var showSummaryToast: Bool = false
     @State private var keywordsLoading: Bool = false
+    @State private var canPlayRecording: Bool = true
     
     var body: some View {
         ScrollView {
@@ -171,7 +180,26 @@ struct TranscriptDetailView: View {
                             timeRange: timeRange(for: segment, in: segs),
                             text: segment.text.isEmpty ? statusText(for: segment) : segment.text,
                             isPlaying: playingSegmentId == segment.id,
+                            isDisabled: !canPlayRecording,
                             onPlayPause: {
+                                // If playback disabled, ignore
+                                guard canPlayRecording else { return }
+                                // Proactively ensure segment has file available; if not, disable all
+                                let path = segment.filePath
+                                if path.isEmpty || !FileManager.default.fileExists(atPath: path) {
+                                    // Try fallback like ViewModel (Documents/Segments/<filename>)
+                                    let originalName = URL(fileURLWithPath: segment.filePath).lastPathComponent
+                                    if let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+                                        let candidate = docs.appendingPathComponent("Segments", isDirectory: true).appendingPathComponent(originalName)
+                                        if !FileManager.default.fileExists(atPath: candidate.path) {
+                                            canPlayRecording = false
+                                            return
+                                        }
+                                    } else {
+                                        canPlayRecording = false
+                                        return
+                                    }
+                                }
                                 if playingSegmentId == segment.id {
                                     PlaybackService.shared.stop()
                                     playingSegmentId = nil
@@ -244,35 +272,35 @@ struct TranscriptDetailView: View {
     private var titleText: String {
         recording.title?.isEmpty == false ? recording.title! : "Recording"
     }
-	
-	private func timeRange(for segment: TranscriptionSegment, in all: [TranscriptionSegment]) -> String {
-		guard let idx = all.firstIndex(where: { $0.id == segment.id }) else {
-			return singleTime(segment.timestamp)
-		}
-		let start = segment.timestamp
-		let end: TimeInterval
-		if idx + 1 < all.count {
-			end = max(all[idx + 1].timestamp, start)
-		} else {
-			end = max(recording.duration, start)
-		}
-		return "\(singleTime(start)) - \(singleTime(end))"
-	}
-	
-	private func singleTime(_ t: TimeInterval) -> String {
-		let mins = Int(t) / 60
-		let secs = Int(t) % 60
-		return String(format: "%01d:%02d", mins, secs)
-	}
-	
-	private func statusText(for segment: TranscriptionSegment) -> String {
-		switch segment.status {
-		case "pending", "processing": return "Processing…"
-		case "failed": return "Failed to transcribe"
-		case "queued": return "Queued (offline)"
-		default: return ""
-		}
-	}
+    
+    private func timeRange(for segment: TranscriptionSegment, in all: [TranscriptionSegment]) -> String {
+        guard let idx = all.firstIndex(where: { $0.id == segment.id }) else {
+            return singleTime(segment.timestamp)
+        }
+        let start = segment.timestamp
+        let end: TimeInterval
+        if idx + 1 < all.count {
+            end = max(all[idx + 1].timestamp, start)
+        } else {
+            end = max(recording.duration, start)
+        }
+        return "\(singleTime(start)) - \(singleTime(end))"
+    }
+    
+    private func singleTime(_ t: TimeInterval) -> String {
+        let mins = Int(t) / 60
+        let secs = Int(t) % 60
+        return String(format: "%01d:%02d", mins, secs)
+    }
+    
+    private func statusText(for segment: TranscriptionSegment) -> String {
+        switch segment.status {
+        case "pending", "processing": return "Processing…"
+        case "failed": return "Failed to transcribe"
+        case "queued": return "Queued (offline)"
+        default: return ""
+        }
+    }
 }
 
 
