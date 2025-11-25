@@ -329,7 +329,7 @@ transcribeWithFallback(audioURL: url) { ... }
 
 ## Known Limitations
 
-1. **Single Transcription Provider**: Currently only supports OpenAI Whisper API
+1. **Single Transcription Provider**: Currently only supports OpenAI audio transcription (gpt-4o-mini-transcribe)
 2. **Local Storage Only**: No cloud sync capabilities
 3. **Basic Audio Editing**: Limited audio manipulation features
 4. **No Real-time Transcription**: Transcription occurs after recording completion

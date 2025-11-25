@@ -12,7 +12,7 @@ A production-quality iOS application for recording, transcribing, and managing a
 - Automatic pause/resume functionality
 
 ### 🔄 Advanced Transcription
-- Integration with OpenAI Whisper API for accurate transcription
+- Integration with OpenAI GPT‑4o Mini Transcribe for accurate transcription
 - Automatic audio segmentation (30-second chunks)
 - Offline queuing system for network interruptions
 - Fallback to on-device SFSpeechRecognizer when API fails
