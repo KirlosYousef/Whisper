@@ -12,6 +12,7 @@ final class SettingsStore: ObservableObject {
     @AppStorage("transcriptionLanguage") var transcriptionLanguage: String = "auto"
     @AppStorage("defaultTranslationLanguage") var defaultTranslationLanguage: String = "en"
     @AppStorage("hapticsEnabled") var hapticsEnabled: Bool = true
+    @AppStorage("hasCompletedOnboarding") var hasCompletedOnboarding: Bool = false
     
     let helpURL = URL(string: "https://example.com/help")!
     let privacyURL = URL(string: "https://example.com/privacy")!
