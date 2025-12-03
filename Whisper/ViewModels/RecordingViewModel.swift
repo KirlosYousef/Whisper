@@ -106,6 +106,9 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     }
     
     func startRecording() {
+        // Request speech recognition permission before starting recording
+        transcriptionService.requestSpeechRecognitionPermission()
+        
         audioService.startRecording { success, filePath in
             if success {
                 DispatchQueue.main.async {

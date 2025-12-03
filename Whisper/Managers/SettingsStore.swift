@@ -14,9 +14,9 @@ final class SettingsStore: ObservableObject {
     @AppStorage("hapticsEnabled") var hapticsEnabled: Bool = true
     @AppStorage("hasCompletedOnboarding") var hasCompletedOnboarding: Bool = false
     
-    let helpURL = URL(string: "https://example.com/help")!
-    let privacyURL = URL(string: "https://example.com/privacy")!
-    let supportEmail = "support@example.com"
+    let helpURL = URL(string: "https://www.revera.kirlosyousef.com/contact")!
+    let privacyURL = URL(string: "https://www.revera.kirlosyousef.com/privacy")!
+    let supportEmail = "hello@kirlosyousef.com"
 }
 
 

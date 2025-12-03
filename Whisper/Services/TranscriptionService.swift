@@ -56,11 +56,9 @@ class TranscriptionService {
             print("   Please add your OpenAI API key to Whisper/Config.plist")
             print("   The app will use local speech recognition as fallback")
         }
-        
-        requestSpeechRecognitionPermission()
     }
     
-    private func requestSpeechRecognitionPermission() {
+    func requestSpeechRecognitionPermission() {
         SFSpeechRecognizer.requestAuthorization { status in
             print("Speech recognition authorization status: \(status.rawValue)")
         }
