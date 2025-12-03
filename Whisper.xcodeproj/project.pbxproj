@@ -29,19 +29,19 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		BC363C112E1AA77E007225BE /* Whisper.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Whisper.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		BC363C112E1AA77E007225BE /* Revera AI.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Revera AI.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		BC363C202E1AA781007225BE /* WhisperTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = WhisperTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		BC363C2A2E1AA781007225BE /* WhisperUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = WhisperUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		BC363C502E1AB000007225BE /* Whisper/Config.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Whisper/Config.plist; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		BC363C492E1AAFA8007225BE /* Exceptions for "Whisper" folder in "Whisper" target */ = {
+		BC363C492E1AAFA8007225BE /* Exceptions for "Whisper" folder in "Revera AI" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
 			);
-			target = BC363C102E1AA77E007225BE /* Whisper */;
+			target = BC363C102E1AA77E007225BE /* Revera AI */;
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
@@ -49,7 +49,7 @@
 		BC363C132E1AA77E007225BE /* Whisper */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
-				BC363C492E1AAFA8007225BE /* Exceptions for "Whisper" folder in "Whisper" target */,
+				BC363C492E1AAFA8007225BE /* Exceptions for "Whisper" folder in "Revera AI" target */,
 			);
 			path = Whisper;
 			sourceTree = "<group>";
@@ -107,7 +107,7 @@
 		BC363C122E1AA77E007225BE /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				BC363C112E1AA77E007225BE /* Whisper.app */,
+				BC363C112E1AA77E007225BE /* Revera AI.app */,
 				BC363C202E1AA781007225BE /* WhisperTests.xctest */,
 				BC363C2A2E1AA781007225BE /* WhisperUITests.xctest */,
 			);
@@ -125,9 +125,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		BC363C102E1AA77E007225BE /* Whisper */ = {
+		BC363C102E1AA77E007225BE /* Revera AI */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = BC363C342E1AA781007225BE /* Build configuration list for PBXNativeTarget "Whisper" */;
+			buildConfigurationList = BC363C342E1AA781007225BE /* Build configuration list for PBXNativeTarget "Revera AI" */;
 			buildPhases = (
 				BC363C0D2E1AA77E007225BE /* Sources */,
 				BC363C0E2E1AA77E007225BE /* Frameworks */,
@@ -140,13 +140,13 @@
 			fileSystemSynchronizedGroups = (
 				BC363C132E1AA77E007225BE /* Whisper */,
 			);
-			name = Whisper;
+			name = "Revera AI";
 			packageProductDependencies = (
 				BC0EE3292EC7E57200726B6A /* RevenueCat */,
 				BC0EE32B2EC7E57200726B6A /* RevenueCatUI */,
 			);
 			productName = Whisper;
-			productReference = BC363C112E1AA77E007225BE /* Whisper.app */;
+			productReference = BC363C112E1AA77E007225BE /* Revera AI.app */;
 			productType = "com.apple.product-type.application";
 		};
 		BC363C1F2E1AA781007225BE /* WhisperTests */ = {
@@ -235,7 +235,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				BC363C102E1AA77E007225BE /* Whisper */,
+				BC363C102E1AA77E007225BE /* Revera AI */,
 				BC363C1F2E1AA781007225BE /* WhisperTests */,
 				BC363C292E1AA781007225BE /* WhisperUITests */,
 			);
@@ -293,12 +293,12 @@
 /* Begin PBXTargetDependency section */
 		BC363C222E1AA781007225BE /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = BC363C102E1AA77E007225BE /* Whisper */;
+			target = BC363C102E1AA77E007225BE /* Revera AI */;
 			targetProxy = BC363C212E1AA781007225BE /* PBXContainerItemProxy */;
 		};
 		BC363C2C2E1AA781007225BE /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = BC363C102E1AA77E007225BE /* Whisper */;
+			target = BC363C102E1AA77E007225BE /* Revera AI */;
 			targetProxy = BC363C2B2E1AA781007225BE /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
@@ -438,7 +438,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Whisper/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = Whisper;
+				INFOPLIST_KEY_CFBundleDisplayName = "Revera AI";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Please allow using your microphone.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "This app uses speech recognition to transcribe audio recordings when the online service is unavailable.";
@@ -453,7 +453,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.2.0;
-				PRODUCT_BUNDLE_IDENTIFIER = KirlosYousef.Whisper;
+				PRODUCT_BUNDLE_IDENTIFIER = KirlosYousef.Revera;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
@@ -472,7 +472,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Whisper/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = Whisper;
+				INFOPLIST_KEY_CFBundleDisplayName = "Revera AI";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Please allow using your microphone.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "This app uses speech recognition to transcribe audio recordings when the online service is unavailable.";
@@ -487,7 +487,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.2.0;
-				PRODUCT_BUNDLE_IDENTIFIER = KirlosYousef.Whisper;
+				PRODUCT_BUNDLE_IDENTIFIER = KirlosYousef.Revera;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
@@ -579,7 +579,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		BC363C342E1AA781007225BE /* Build configuration list for PBXNativeTarget "Whisper" */ = {
+		BC363C342E1AA781007225BE /* Build configuration list for PBXNativeTarget "Revera AI" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				BC363C352E1AA781007225BE /* Debug */,
