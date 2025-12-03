@@ -168,7 +168,7 @@ struct TranscriptDetailView: View {
                             }
                         }
                     }
-                    .frame(maxWidth: .infinity)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .card()
                 }
                 
