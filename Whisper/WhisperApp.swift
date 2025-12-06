@@ -33,6 +33,9 @@ struct WhisperApp: App {
     init() {
         // Initialize the shared RecordingViewModel once for the lifetime of the app
         _viewModel = StateObject(wrappedValue: RecordingViewModel(modelContext: WhisperApp.sharedModelContainer.mainContext))
+        
+        // Initialize Mixpanel through the manager instead of directly
+        AnalyticsService.shared.initialize()
     }
 
     var body: some Scene {

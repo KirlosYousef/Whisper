@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		BC0EE32A2EC7E57200726B6A /* RevenueCat in Frameworks */ = {isa = PBXBuildFile; productRef = BC0EE3292EC7E57200726B6A /* RevenueCat */; };
 		BC0EE32C2EC7E57200726B6A /* RevenueCatUI in Frameworks */ = {isa = PBXBuildFile; productRef = BC0EE32B2EC7E57200726B6A /* RevenueCatUI */; };
+		BC1AF8202EE3B516007320F6 /* Mixpanel in Frameworks */ = {isa = PBXBuildFile; productRef = BC1AF81F2EE3B516007320F6 /* Mixpanel */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -71,6 +72,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				BC1AF8202EE3B516007320F6 /* Mixpanel in Frameworks */,
 				BC0EE32C2EC7E57200726B6A /* RevenueCatUI in Frameworks */,
 				BC0EE32A2EC7E57200726B6A /* RevenueCat in Frameworks */,
 			);
@@ -144,6 +146,7 @@
 			packageProductDependencies = (
 				BC0EE3292EC7E57200726B6A /* RevenueCat */,
 				BC0EE32B2EC7E57200726B6A /* RevenueCatUI */,
+				BC1AF81F2EE3B516007320F6 /* Mixpanel */,
 			);
 			productName = Whisper;
 			productReference = BC363C112E1AA77E007225BE /* Revera AI.app */;
@@ -229,6 +232,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				BC0EE3282EC7E57200726B6A /* XCRemoteSwiftPackageReference "purchases-ios-spm" */,
+				BC1AF81E2EE3B516007320F6 /* XCRemoteSwiftPackageReference "mixpanel-swift" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = BC363C122E1AA77E007225BE /* Products */;
@@ -619,6 +623,14 @@
 				minimumVersion = 5.48.0;
 			};
 		};
+		BC1AF81E2EE3B516007320F6 /* XCRemoteSwiftPackageReference "mixpanel-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/mixpanel/mixpanel-swift";
+			requirement = {
+				kind = exactVersion;
+				version = 4.4.0;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -631,6 +643,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = BC0EE3282EC7E57200726B6A /* XCRemoteSwiftPackageReference "purchases-ios-spm" */;
 			productName = RevenueCatUI;
+		};
+		BC1AF81F2EE3B516007320F6 /* Mixpanel */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = BC1AF81E2EE3B516007320F6 /* XCRemoteSwiftPackageReference "mixpanel-swift" */;
+			productName = Mixpanel;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

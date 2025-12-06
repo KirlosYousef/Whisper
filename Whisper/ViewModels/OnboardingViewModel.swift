@@ -180,6 +180,9 @@ final class OnboardingViewModel: ObservableObject {
         // Save user name to PaywallManager
         PaywallManager.shared.loginUser(name: userName)
         
+        AnalyticsService.shared.identify(userId: userName)
+        AnalyticsService.shared.trackEvent("Onboarding finished")
+        
         // Mark onboarding as completed
         settingsStore.hasCompletedOnboarding = true
         
