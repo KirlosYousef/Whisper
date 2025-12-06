@@ -16,6 +16,10 @@ struct PayWallView: View {
         PaywallView(displayCloseButton: displayCloseButton)
             .onAppear {
                 HapticsManager.shared.impact(.light)
+                AnalyticsService.shared.trackEvent("Paywall Shown", properties: [
+                    "display_close_button": displayCloseButton,
+                    "source": "onboarding"
+                ])
             }
     }
 }
@@ -37,6 +41,9 @@ struct PayWallViewModifier: ViewModifier {
                             HStack {
                                 Spacer()
                                 Button {
+                                    AnalyticsService.shared.trackEvent("Paywall Dismissed", properties: [
+                                        "source": "close_button"
+                                    ])
                                     showPaywall = false
                                 } label: {
                                     Image(systemName: "xmark.circle.fill")

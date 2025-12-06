@@ -36,6 +36,11 @@ struct WhisperApp: App {
         
         // Initialize Mixpanel through the manager instead of directly
         AnalyticsService.shared.initialize()
+        
+        // Track app launch
+        AnalyticsService.shared.trackEvent("App Launched", properties: [
+            "has_completed_onboarding": SettingsStore().hasCompletedOnboarding
+        ])
     }
 
     var body: some Scene {
@@ -75,14 +80,29 @@ struct WhisperApp: App {
                     .onAppear {
                         HapticsManager.shared.prepare()
                     }
+                    .onChange(of: selectedTab) { oldValue, newValue in
+                        let tabNames = ["Transcripts", "Record", "Settings"]
+                        if newValue < tabNames.count {
+                            AnalyticsService.shared.trackEvent("Tab Switched", properties: [
+                                "from_tab": oldValue < tabNames.count ? tabNames[oldValue] : "unknown",
+                                "to_tab": tabNames[newValue]
+                            ])
+                        }
+                    }
                     .onChange(of: paywallManager.isPremium) { _, isPremium in
                         if isPremium {
+                            AnalyticsService.shared.trackEvent("Premium Activated", properties: nil)
                             HapticsManager.shared.notification(.success)
                         }
                     }
                     
                     if !paywallManager.isPremium {
                         PayWallView()
+                            .onAppear {
+                                AnalyticsService.shared.trackEvent("Paywall Shown", properties: [
+                                    "source": "main_app"
+                                ])
+                            }
                     }
                 } else {
                     // Onboarding flow

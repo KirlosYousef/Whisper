@@ -32,6 +32,9 @@ struct RecordScreen: View {
 		}
 		.onAppear {
 			viewModel.checkNetworkStatus()
+			AnalyticsService.shared.trackEvent("Record Screen Viewed", properties: [
+				"is_online": viewModel.isOnline
+			])
 		}
 		.onChange(of: viewModel.errorMessage) { _, newValue in
 			if newValue != nil {
@@ -40,7 +43,11 @@ struct RecordScreen: View {
 		}
 		.overlay(alignment: .bottom) {
 			VStack(spacing: 12) {
-				TranslationChip(language: $viewModel.sessionTranslationLanguage) { _ in }
+				TranslationChip(language: $viewModel.sessionTranslationLanguage) { newValue in
+					AnalyticsService.shared.trackEvent("Session Translation Language Changed", properties: [
+						"language": newValue
+					])
+				}
 			}
 			// Keep chip above the mic when docked
 			.padding(.bottom, docked ? 160 : 24)

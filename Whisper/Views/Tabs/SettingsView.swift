@@ -26,11 +26,19 @@ struct SettingsView: View {
                         title: "Default Translation",
                         current: store.defaultTranslationLanguage
                     ) { newValue in
+                        AnalyticsService.shared.trackEvent("Default Translation Language Changed", properties: [
+                            "old_language": store.defaultTranslationLanguage,
+                            "new_language": newValue
+                        ])
                         store.defaultTranslationLanguage = newValue
                         HapticsManager.shared.selection()
                     }
                     Divider().padding(.leading, 64)
                     Button {
+                        let newValue = !store.hapticsEnabled
+                        AnalyticsService.shared.trackEvent("Haptics Toggled", properties: [
+                            "enabled": newValue
+                        ])
                         store.hapticsEnabled.toggle()
                         HapticsManager.shared.selection()
                     } label: {
@@ -69,6 +77,7 @@ struct SettingsView: View {
                 sectionLabel("SUPPORT")
                 VStack(spacing: 0) {
                     Button {
+                        AnalyticsService.shared.trackEvent("Help & FAQ Opened", properties: nil)
                         UIApplication.shared.open(store.helpURL)
                     } label: {
                         SettingsRow(
@@ -79,6 +88,7 @@ struct SettingsView: View {
                     }
                     Divider().padding(.leading, 64)
                     Button {
+                        AnalyticsService.shared.trackEvent("Support Contacted", properties: nil)
                         if let url = URL(string: "mailto:\(store.supportEmail)") {
                             UIApplication.shared.open(url)
                         }
@@ -91,6 +101,7 @@ struct SettingsView: View {
                     }
                     Divider().padding(.leading, 64)
                     Button {
+                        AnalyticsService.shared.trackEvent("Privacy Policy Viewed", properties: nil)
                         UIApplication.shared.open(store.privacyURL)
                     } label: {
                         SettingsRow(
@@ -107,8 +118,14 @@ struct SettingsView: View {
         }
         .background(AppTheme.background(colorScheme).ignoresSafeArea())
         .navigationTitle("Settings")
+        .onAppear {
+            AnalyticsService.shared.trackEvent("Settings Viewed", properties: [
+                "is_premium": PaywallManager.shared.isPremium
+            ])
+        }
         .alert("Clear Cache?", isPresented: $showCleanCacheAlert) {
             Button("Delete Cache", role: .destructive) {
+                AnalyticsService.shared.trackEvent("Clear Cache Initiated", properties: nil)
                 viewModel.cleanupProcessedAudioFiles()
             }
             Button("Cancel", role: .cancel) { }
@@ -117,6 +134,9 @@ struct SettingsView: View {
         }
         .alert("Clear All Recordings?", isPresented: $showClearAll) {
             Button("Delete All", role: .destructive) {
+                AnalyticsService.shared.trackEvent("Clear All Recordings Initiated", properties: [
+                    "recording_count": viewModel.recordings.count
+                ])
                 viewModel.clearAllRecordings()
             }
             Button("Cancel", role: .cancel) { }

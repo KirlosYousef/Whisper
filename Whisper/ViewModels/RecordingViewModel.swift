@@ -81,6 +81,9 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         networkMonitor.onStatusChange = { [weak self] online in
             guard let self = self else { return }
             self.isOnline = online
+            AnalyticsService.shared.trackEvent("Network Status Changed", properties: [
+                "is_online": online
+            ])
             if online {
                 self.processQueuedTranscriptions()
             }
@@ -97,10 +100,16 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     }
     
     func requestPermission() {
+        AnalyticsService.shared.trackEvent("Recording Permission Requested", properties: nil)
         audioService.requestPermission { granted in
             DispatchQueue.main.async {
                 self.permissionDenied = !granted
                 self.showPermissionAlert = !granted
+                if !granted {
+                    AnalyticsService.shared.trackEvent("Recording Permission Denied", properties: nil)
+                } else {
+                    AnalyticsService.shared.trackEvent("Recording Permission Granted", properties: nil)
+                }
             }
         }
     }
@@ -122,7 +131,14 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                     self.modelContext.insert(rec)
                     self.activeRecording = rec
                     self.recordings.insert(rec, at: 0)
+                    
+                    AnalyticsService.shared.trackEvent("Recording Started", properties: [
+                        "translation_language": effective,
+                        "is_online": self.isOnline
+                    ])
                 }
+            } else {
+                AnalyticsService.shared.trackEvent("Recording Start Failed", properties: nil)
             }
         }
     }
@@ -130,6 +146,12 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     func pauseRecording() {
         audioService.pauseRecording()
         isPaused = true
+        if let rec = activeRecording {
+            AnalyticsService.shared.trackEvent("Recording Paused", properties: [
+                "recording_duration": rec.duration,
+                "segment_count": segments(for: rec).count
+            ])
+        }
     }
     
     func stopRecording() {
@@ -137,6 +159,15 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
             DispatchQueue.main.async {
                 self.isRecording = false
                 self.isPaused = false
+                
+                if let rec = self.activeRecording {
+                    let segmentCount = self.segments(for: rec).count
+                    AnalyticsService.shared.trackEvent("Recording Stopped", properties: [
+                        "recording_duration": rec.duration,
+                        "segment_count": segmentCount,
+                        "is_online": self.isOnline
+                    ])
+                }
             }
             // The last segment will be handled by the delegate callback
         }
@@ -146,6 +177,12 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         audioService.resumeRecording()
         isPaused = false
         isRecording = true
+        if let rec = activeRecording {
+            AnalyticsService.shared.trackEvent("Recording Resumed", properties: [
+                "recording_duration": rec.duration,
+                "segment_count": segments(for: rec).count
+            ])
+        }
     }
     
     // MARK: - Summary Loading Helpers
@@ -162,11 +199,25 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         
         let transcript = recording.fullTranscript
         guard !transcript.isEmpty else { return }
+        
+        AnalyticsService.shared.trackEvent("Summary Generation Started", properties: [
+            "recording_duration": recording.duration,
+            "transcript_length": transcript.count,
+            "segment_count": segments(for: recording).count,
+            "is_auto": recording.summary?.isEmpty ?? true
+        ])
+        
         let (summary, todos) = await SummaryService.generateSummary(for: transcript)
         recording.summary = summary
         recording.todoList = todos
         try? modelContext.save()
         fetchRecordings()
+        
+        AnalyticsService.shared.trackEvent("Summary Generation Completed", properties: [
+            "summary_length": summary.count,
+            "todo_count": todos.count,
+            "recording_duration": recording.duration
+        ])
     }
     
     // MARK: - AudioServiceDelegate
@@ -180,6 +231,10 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         DispatchQueue.main.async {
             self.isInterrupted = true
             self.interruptionMessage = reason
+            AnalyticsService.shared.trackEvent("Recording Interrupted", properties: [
+                "reason": reason,
+                "is_online": self.isOnline
+            ])
         }
     }
     
@@ -187,6 +242,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         DispatchQueue.main.async {
             self.isInterrupted = false
             self.interruptionMessage = nil
+            AnalyticsService.shared.trackEvent("Recording Resumed After Interruption", properties: nil)
         }
     }
     
@@ -213,18 +269,36 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         self.fetchRecordings()
         // Check if we're online before attempting transcription
         if self.isOnline {
+            AnalyticsService.shared.trackEvent("Transcription Started", properties: [
+                "segment_duration": duration,
+                "segment_start_time": startTime,
+                "is_online": true
+            ])
             // Start transcription
             self.transcriptionService.transcribe(audioURL: url, segmentStart: startTime, duration: duration) { [weak self] text, error in
                 DispatchQueue.main.async {
                     if let error = error {
                         if let transcriptionError = error as? TranscriptionError, transcriptionError == .noNetwork {
                             segment.status = "queued"
+                            AnalyticsService.shared.trackEvent("Transcription Queued", properties: [
+                                "reason": "no_network",
+                                "segment_duration": duration
+                            ])
                         } else {
                             segment.status = "failed"
                             self?.errorMessage = "Transcription failed: \(error.localizedDescription)"
+                            AnalyticsService.shared.trackEvent("Transcription Failed", properties: [
+                                "error": error.localizedDescription,
+                                "segment_duration": duration
+                            ])
                         }
                         segment.text = ""
                     } else if let text = text {
+                        AnalyticsService.shared.trackEvent("Transcription Completed", properties: [
+                            "segment_duration": duration,
+                            "text_length": text.count,
+                            "has_translation": self?.activeTargetTranslationLanguage != nil
+                        ])
                         // Translate to the session's target language if specified
                         if let target = self?.activeTargetTranslationLanguage, !target.isEmpty {
                             Task { @MainActor in
@@ -280,6 +354,10 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         } else {
             // Queue for later processing
             segment.status = "queued"
+            AnalyticsService.shared.trackEvent("Transcription Queued", properties: [
+                "reason": "offline",
+                "segment_duration": duration
+            ])
             try? self.modelContext.save()
             self.fetchRecordings()
         }
@@ -393,7 +471,19 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     @MainActor
     func performCommand(for recording: Recording, prompt: String) async -> String {
         let transcript = recording.fullTranscript
+        AnalyticsService.shared.trackEvent("Ask/Act Command Executed", properties: [
+            "prompt_length": prompt.count,
+            "transcript_length": transcript.count,
+            "recording_duration": recording.duration
+        ])
+        
         let result = await SummaryService.performCommand(transcript: transcript, command: prompt)
+        
+        AnalyticsService.shared.trackEvent("Ask/Act Command Completed", properties: [
+            "result_length": result.count,
+            "has_result": !result.isEmpty
+        ])
+        
         return result
     }
     
@@ -415,11 +505,21 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     @MainActor
     func extractKeywords(for recording: Recording) async -> [String] {
         let transcript = recording.fullTranscript
+        AnalyticsService.shared.trackEvent("Keywords Extraction Started", properties: [
+            "recording_duration": recording.duration,
+            "transcript_length": transcript.count
+        ])
+        
         let keywords = await SummaryService.extractKeywords(for: transcript, maxKeywords: 8)
         if !keywords.isEmpty {
             recording.keywords = keywords
             try? modelContext.save()
             fetchRecordings()
+            
+            AnalyticsService.shared.trackEvent("Keywords Extraction Completed", properties: [
+                "keyword_count": keywords.count,
+                "recording_duration": recording.duration
+            ])
         }
         return keywords
     }
@@ -456,6 +556,10 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     func play(segment: TranscriptionSegment) {
         let fm = FileManager.default
         if !segment.filePath.isEmpty, fm.fileExists(atPath: segment.filePath) {
+            AnalyticsService.shared.trackEvent("Segment Playback Started", properties: [
+                "segment_timestamp": segment.timestamp,
+                "has_text": !segment.text.isEmpty
+            ])
             PlaybackService.shared.playSegment(at: URL(fileURLWithPath: segment.filePath))
             return
         }
@@ -476,11 +580,16 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     func clearAllRecordings() {
         let descriptor = FetchDescriptor<Recording>()
         if let allRecordings = try? modelContext.fetch(descriptor) {
+            let count = allRecordings.count
             for rec in allRecordings {
                 modelContext.delete(rec)
             }
             try? modelContext.save()
             fetchRecordings()
+            
+            AnalyticsService.shared.trackEvent("All Recordings Cleared", properties: [
+                "recording_count": count
+            ])
         }
     }
     
@@ -488,11 +597,13 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     func cleanupProcessedAudioFiles() {
         guard let allSegments = try? modelContext.fetch(FetchDescriptor<TranscriptionSegment>()) else { return }
         var didDelete = false
+        var deletedCount = 0
         for seg in allSegments where seg.status == "completed" && !seg.filePath.isEmpty {
             do {
                 try FileManager.default.removeItem(atPath: seg.filePath)
                 seg.filePath = ""
                 didDelete = true
+                deletedCount += 1
             } catch {
                 print("Cleanup failed for \(seg.filePath): \(error)")
             }
@@ -500,6 +611,10 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         if didDelete {
             try? modelContext.save()
             fetchRecordings()
+            
+            AnalyticsService.shared.trackEvent("Cache Cleaned", properties: [
+                "files_deleted": deletedCount
+            ])
         }
     }
 }

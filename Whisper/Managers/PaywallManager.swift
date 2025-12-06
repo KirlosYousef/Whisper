@@ -64,7 +64,23 @@ class PaywallManager: NSObject, ObservableObject {
             let customerInfo = try await Purchases.shared.customerInfo()
             let isPremiumMember = !customerInfo.entitlements.active.isEmpty // user has access to some entitlement
             
+            let wasPremium = self.isPremium
             self.isPremium = isPremiumMember
+            
+            // Track premium status change
+            if wasPremium != isPremiumMember {
+                if isPremiumMember {
+                    AnalyticsService.shared.trackEvent("Premium Status Changed", properties: [
+                        "is_premium": true,
+                        "entitlement_count": customerInfo.entitlements.active.count
+                    ])
+                } else {
+                    AnalyticsService.shared.trackEvent("Premium Status Changed", properties: [
+                        "is_premium": false
+                    ])
+                }
+            }
+            
             return isPremiumMember
         } catch {
             // handle error

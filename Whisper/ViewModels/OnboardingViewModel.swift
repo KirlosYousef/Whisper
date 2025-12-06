@@ -141,6 +141,13 @@ final class OnboardingViewModel: ObservableObject {
     func selectAnswer(_ answer: String) {
         guard let question = currentQuestion else { return }
         selectedAnswers[question.id] = answer
+        AnalyticsService.shared.trackEvent("Onboarding Question Answered", properties: [
+            "question_id": question.id,
+            "question_title": question.title,
+            "answer": answer,
+            "question_number": currentQuestionIndex + 1,
+            "total_questions": questions.count
+        ])
         HapticsManager.shared.selection()
     }
     
@@ -159,6 +166,7 @@ final class OnboardingViewModel: ObservableObject {
     }
     
     func proceedToQuestions() {
+        AnalyticsService.shared.trackEvent("Onboarding Started", properties: nil)
         withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
             currentStep = .questions
             currentQuestionIndex = 0
@@ -181,7 +189,19 @@ final class OnboardingViewModel: ObservableObject {
         PaywallManager.shared.loginUser(name: userName)
         
         AnalyticsService.shared.identify(userId: userName)
-        AnalyticsService.shared.trackEvent("Onboarding finished")
+        
+        // Track onboarding completion with all answers
+        var properties: [String: Any] = [
+            "user_name": userName,
+            "total_questions": questions.count
+        ]
+        
+        // Add all answers
+        for (questionId, answer) in selectedAnswers {
+            properties["answer_\(questionId)"] = answer
+        }
+        
+        AnalyticsService.shared.trackEvent("Onboarding Completed", properties: properties)
         
         // Mark onboarding as completed
         settingsStore.hasCompletedOnboarding = true

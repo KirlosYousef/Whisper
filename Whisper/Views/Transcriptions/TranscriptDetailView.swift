@@ -43,6 +43,10 @@ struct TranscriptDetailView: View {
                         } label: { Label("Extract Keywords", systemImage: "textformat") }
                         
                         Button {
+                            AnalyticsService.shared.trackEvent("Recording Shared", properties: [
+                                "recording_duration": recording.duration,
+                                "format": "default"
+                            ])
                             SummaryService.shareRecording(recording)
                         } label: { Label("Share", systemImage: "square.and.arrow.up") }
                         
@@ -52,10 +56,18 @@ struct TranscriptDetailView: View {
                         
                         Menu("Export") {
                             Button {
+                                AnalyticsService.shared.trackEvent("Recording Shared", properties: [
+                                    "recording_duration": recording.duration,
+                                    "format": "markdown"
+                                ])
                                 SummaryService.shareRecording(recording, format: .markdown)
                             } label: { Label("Share Markdown", systemImage: "square.and.arrow.up") }
                             
                             Button {
+                                AnalyticsService.shared.trackEvent("Recording Shared", properties: [
+                                    "recording_duration": recording.duration,
+                                    "format": "text"
+                                ])
                                 SummaryService.shareRecording(recording, format: .text)
                             } label: { Label("Share Text", systemImage: "square.and.arrow.up") }
                             
@@ -105,6 +117,12 @@ struct TranscriptDetailView: View {
                                     .foregroundColor(.primary)
                                     .frame(width: 32, height: 32)
                             }
+                            .simultaneousGesture(TapGesture().onEnded {
+                                AnalyticsService.shared.trackEvent("Summary Shared", properties: [
+                                    "summary_length": summaryText.count,
+                                    "recording_duration": recording.duration
+                                ])
+                            })
                         }
                     }
                     if !summaryText.isEmpty {
@@ -137,6 +155,12 @@ struct TranscriptDetailView: View {
                                 Image(systemName: "arrowshape.turn.up.forward.fill")
                                     .foregroundColor(.primary)
                                     .frame(width: 32, height: 32)
+                            }
+                            .onTapGesture {
+                                AnalyticsService.shared.trackEvent("Keywords Shared", properties: [
+                                    "keyword_count": keywords.count,
+                                    "recording_duration": recording.duration
+                                ])
                             }
                         } else {
                             Button("Extract") {
@@ -213,10 +237,18 @@ struct TranscriptDetailView: View {
                                     Button {
                                         let text = segment.text
                                         if !text.isEmpty {
+                                            AnalyticsService.shared.trackEvent("Segment Summary Generation Started", properties: [
+                                                "segment_timestamp": segment.timestamp,
+                                                "text_length": text.count
+                                            ])
                                             Task {
                                                 let (summary, _) = await SummaryService.generateShortSummary(for: text)
                                                 copyAlertMessage = summary.isEmpty ? "No summary generated" : summary
                                                 showCopyAlert = true
+                                                AnalyticsService.shared.trackEvent("Segment Summary Generation Completed", properties: [
+                                                    "summary_length": summary.count,
+                                                    "has_summary": !summary.isEmpty
+                                                ])
                                             }
                                         }
                                     } label: {
@@ -226,6 +258,12 @@ struct TranscriptDetailView: View {
                                     ShareLink(item: segment.text.isEmpty ? statusText(for: segment) : segment.text) {
                                         Label("Share Text", systemImage: "square.and.arrow.up")
                                     }
+                                    .simultaneousGesture(TapGesture().onEnded {
+                                        AnalyticsService.shared.trackEvent("Segment Shared", properties: [
+                                            "segment_timestamp": segment.timestamp,
+                                            "text_length": segment.text.count
+                                        ])
+                                    })
                                     
                                     Button {
                                         let text = segment.text

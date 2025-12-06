@@ -27,6 +27,7 @@ struct TranscriptsListView: View {
 			ToolbarItem(placement: .navigationBarTrailing) {
 				Button {
 					HapticsManager.shared.selection()
+					AnalyticsService.shared.trackEvent("Transcripts Refreshed", properties: nil)
 					viewModel.refreshRecordings()
 				} label: {
 					Image(systemName: "arrow.clockwise")
@@ -34,9 +35,17 @@ struct TranscriptsListView: View {
 			}
 		}
 		.searchable(text: $viewModel.searchText, prompt: "Search transcriptions…")
+		.onChange(of: viewModel.searchText) { oldValue, newValue in
+			if !newValue.isEmpty && oldValue.isEmpty {
+				AnalyticsService.shared.trackEvent("Transcript Search Started", properties: nil)
+			}
+		}
 		.onAppear {
 			viewModel.fetchRecordings()
 			viewModel.checkNetworkStatus()
+			AnalyticsService.shared.trackEvent("Transcripts List Viewed", properties: [
+				"recording_count": viewModel.recordings.count
+			])
 		}
 		.onChange(of: viewModel.errorMessage) { _, newValue in
 			if newValue != nil {
@@ -74,6 +83,14 @@ struct TranscriptsListView: View {
 						ForEach(Array((groupedRecordings[date] ?? []).enumerated()), id: \.element.id) { idx, recording in
 							NavigationLink {
 								TranscriptDetailView(viewModel: viewModel, recording: recording)
+									.onAppear {
+										AnalyticsService.shared.trackEvent("Transcript Detail Viewed", properties: [
+											"recording_duration": recording.duration,
+											"has_summary": !(recording.summary?.isEmpty ?? true),
+											"has_keywords": !(recording.keywords?.isEmpty ?? true),
+											"segment_count": viewModel.segments(for: recording).count
+										])
+									}
 							} label: {
 								VStack(alignment: .leading, spacing: 8) {
 									RecordingCard(

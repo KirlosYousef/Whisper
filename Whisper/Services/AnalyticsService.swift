@@ -22,6 +22,7 @@ final class AnalyticsService {
         }
         
         Mixpanel.initialize(token: token, trackAutomaticEvents: false)
+        Mixpanel.mainInstance().loggingEnabled = true
         Mixpanel.mainInstance().serverURL = "https://api-eu.mixpanel.com"
     }
     
@@ -37,8 +38,26 @@ final class AnalyticsService {
     }
     
     /// Track a discrete event
-    func trackEvent(_ name: String, properties: [String: MixpanelType]? = nil) {
-        Mixpanel.mainInstance().track(event: name, properties: properties)
+    /// Properties can contain String, Int, Double, Bool, or arrays of these types
+    func trackEvent(_ name: String, properties: [String: Any]? = nil) {
+        // Convert properties to MixpanelType-compatible dictionary
+        let mixpanelProperties = properties?.compactMapValues { value -> MixpanelType? in
+            // MixpanelType accepts: String, Int, Double, Bool, Date, URL, and arrays of these
+            if let string = value as? String { return string }
+            if let int = value as? Int { return int }
+            if let double = value as? Double { return double }
+            if let bool = value as? Bool { return bool }
+            if let date = value as? Date { return date }
+            if let url = value as? URL { return url }
+            // Convert arrays
+            if let array = value as? [String] { return array }
+            if let array = value as? [Int] { return array }
+            if let array = value as? [Double] { return array }
+            if let array = value as? [Bool] { return array }
+            // Fallback: convert to string
+            return String(describing: value)
+        }
+        Mixpanel.mainInstance().track(event: name, properties: mixpanelProperties)
     }
     
     /// Identify the user (e.g., after login)
