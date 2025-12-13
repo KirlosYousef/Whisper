@@ -45,7 +45,8 @@ struct SettingsView: View {
                         SettingsRow(
                             iconName: "iphone.radiowaves.left.and.right",
                             title: "Haptics",
-                            trailingView: Toggle("", isOn: $store.hapticsEnabled),
+                            trailingView: Toggle("", isOn: $store.hapticsEnabled)
+                                .tint(Color.accentColor),
                             hasChevron: false)
                     }
                     .buttonStyle(.plain)
