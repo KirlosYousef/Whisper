@@ -196,92 +196,53 @@ struct TranscriptDetailView: View {
                     .card()
                 }
                 
-                let segs = viewModel.segments(for: recording)
-                LazyVStack(alignment: .leading, spacing: 10) {
-                    ForEach(segs, id: \.id) { segment in
-                        TranscriptSegmentCard(
-                            isActive: playingSegmentId == segment.id,
-                            timeRange: timeRange(for: segment, in: segs),
-                            text: segment.text.isEmpty ? statusText(for: segment) : segment.text,
-                            isPlaying: playingSegmentId == segment.id,
-                            isDisabled: !canPlayRecording,
-                            onPlayPause: {
-                                // If playback disabled, ignore
-                                guard canPlayRecording else { return }
-                                // Proactively ensure segment has file available; if not, disable all
-                                let path = segment.filePath
-                                if path.isEmpty || !FileManager.default.fileExists(atPath: path) {
-                                    // Try fallback like ViewModel (Documents/Segments/<filename>)
-                                    let originalName = URL(fileURLWithPath: segment.filePath).lastPathComponent
-                                    if let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
-                                        let candidate = docs.appendingPathComponent("Segments", isDirectory: true).appendingPathComponent(originalName)
-                                        if !FileManager.default.fileExists(atPath: candidate.path) {
-                                            canPlayRecording = false
-                                            return
-                                        }
-                                    } else {
-                                        canPlayRecording = false
-                                        return
-                                    }
-                                }
-                                if playingSegmentId == segment.id {
-                                    PlaybackService.shared.stop()
-                                    playingSegmentId = nil
-                                } else {
-                                    viewModel.play(segment: segment)
-                                    playingSegmentId = segment.id
-                                }
-                            },
-                            trailingMenu: {
-                                Menu {
-                                    Button {
-                                        let text = segment.text
-                                        if !text.isEmpty {
-                                            AnalyticsService.shared.trackEvent("Segment Summary Generation Started", properties: [
-                                                "segment_timestamp": segment.timestamp,
-                                                "text_length": text.count
-                                            ])
-                                            Task {
-                                                let (summary, _) = await SummaryService.generateShortSummary(for: text)
-                                                copyAlertMessage = summary.isEmpty ? "No summary generated" : summary
-                                                showCopyAlert = true
-                                                AnalyticsService.shared.trackEvent("Segment Summary Generation Completed", properties: [
-                                                    "summary_length": summary.count,
-                                                    "has_summary": !summary.isEmpty
-                                                ])
+                Group {
+                    if shouldShowFullTranscript {
+                        fullTranscriptCard
+                    } else {
+                        let segs = viewModel.segments(for: recording)
+                        LazyVStack(alignment: .leading, spacing: 10) {
+                            ForEach(segs, id: \.id) { segment in
+                                TranscriptSegmentCard(
+                                    isActive: playingSegmentId == segment.id,
+                                    timeRange: timeRange(for: segment, in: segs),
+                                    text: segment.text.isEmpty ? statusText(for: segment) : segment.text,
+                                    isPlaying: playingSegmentId == segment.id,
+                                    isDisabled: !canPlayRecording,
+                                    onPlayPause: {
+                                        // If playback disabled, ignore
+                                        guard canPlayRecording else { return }
+                                        // Proactively ensure segment has file available; if not, disable all
+                                        let path = segment.filePath
+                                        if path.isEmpty || !FileManager.default.fileExists(atPath: path) {
+                                            // Try fallback like ViewModel (Documents/Segments/<filename>)
+                                            let originalName = URL(fileURLWithPath: segment.filePath).lastPathComponent
+                                            if let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+                                                let candidate = docs.appendingPathComponent("Segments", isDirectory: true).appendingPathComponent(originalName)
+                                                if !FileManager.default.fileExists(atPath: candidate.path) {
+                                                    canPlayRecording = false
+                                                    return
+                                                }
+                                            } else {
+                                                canPlayRecording = false
+                                                return
                                             }
                                         }
-                                    } label: {
-                                        Label("Generate Summary", systemImage: "text.badge.star")
+                                        if playingSegmentId == segment.id {
+                                            PlaybackService.shared.stop()
+                                            playingSegmentId = nil
+                                        } else {
+                                            viewModel.play(segment: segment)
+                                            playingSegmentId = segment.id
+                                        }
+                                    },
+                                    trailingMenu: {
+                                        segmentMenu(for: segment)
                                     }
-                                    
-                                    ShareLink(item: segment.text.isEmpty ? statusText(for: segment) : segment.text) {
-                                        Label("Share Text", systemImage: "square.and.arrow.up")
-                                    }
-                                    .simultaneousGesture(TapGesture().onEnded {
-                                        AnalyticsService.shared.trackEvent("Segment Shared", properties: [
-                                            "segment_timestamp": segment.timestamp,
-                                            "text_length": segment.text.count
-                                        ])
-                                    })
-                                    
-                                    Button {
-                                        let text = segment.text
-                                        guard !text.isEmpty else { return }
-                                        UIPasteboard.general.string = text
-                                        HapticsManager.shared.notification(.success)
-                                    } label: {
-                                        Label("Copy Text", systemImage: "doc.on.doc")
-                                    }
-                                } label: {
-                                    Image(systemName: "ellipsis")
-                                        .foregroundColor(.primary)
-                                        .rotationEffect(.degrees(90))
-                                        .frame(width: 32, height: 32)
-                                }
+                                )
+                                .card()
                             }
-                        )
-                        .card()
+                        }
                     }
                 }
                 .padding(.horizontal, 0)
@@ -310,6 +271,93 @@ struct TranscriptDetailView: View {
     private var titleText: String {
         recording.title?.isEmpty == false ? recording.title! : "Recording"
     }
+
+    private var shouldShowFullTranscript: Bool {
+        viewModel.usesFullTranscriptDisplay(for: recording) && !fullTranscriptText.isEmpty
+    }
+
+    private var fullTranscriptText: String {
+        recording.fullTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var fullTranscriptTimeRange: String {
+        "0:00 - \(singleTime(recording.duration))"
+    }
+
+    private var fullTranscriptCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Full transcript")
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+                Spacer()
+                ShareLink(item: fullTranscriptText) {
+                    Image(systemName: "arrowshape.turn.up.forward.fill")
+                        .foregroundColor(.primary)
+                        .frame(width: 32, height: 32)
+                }
+            }
+
+            Text(fullTranscriptTimeRange)
+                .font(.app(.medium, size: 14))
+                .foregroundColor(.secondary)
+
+            Text(fullTranscriptText)
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .card()
+    }
+
+    private func segmentMenu(for segment: TranscriptionSegment) -> some View {
+        Menu {
+            Button {
+                let text = segment.text
+                if !text.isEmpty {
+                    AnalyticsService.shared.trackEvent("Segment Summary Generation Started", properties: [
+                        "segment_timestamp": segment.timestamp,
+                        "text_length": text.count
+                    ])
+                    Task {
+                        let (summary, _) = await SummaryService.generateShortSummary(for: text)
+                        copyAlertMessage = summary.isEmpty ? "No summary generated" : summary
+                        showCopyAlert = true
+                        AnalyticsService.shared.trackEvent("Segment Summary Generation Completed", properties: [
+                            "summary_length": summary.count,
+                            "has_summary": !summary.isEmpty
+                        ])
+                    }
+                }
+            } label: {
+                Label("Generate Summary", systemImage: "text.badge.star")
+            }
+
+            ShareLink(item: segment.text.isEmpty ? statusText(for: segment) : segment.text) {
+                Label("Share Text", systemImage: "square.and.arrow.up")
+            }
+            .simultaneousGesture(TapGesture().onEnded {
+                AnalyticsService.shared.trackEvent("Segment Shared", properties: [
+                    "segment_timestamp": segment.timestamp,
+                    "text_length": segment.text.count
+                ])
+            })
+
+            Button {
+                let text = segment.text
+                guard !text.isEmpty else { return }
+                UIPasteboard.general.string = text
+                HapticsManager.shared.notification(.success)
+            } label: {
+                Label("Copy Text", systemImage: "doc.on.doc")
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .foregroundColor(.primary)
+                .rotationEffect(.degrees(90))
+                .frame(width: 32, height: 32)
+        }
+    }
     
     private func timeRange(for segment: TranscriptionSegment, in all: [TranscriptionSegment]) -> String {
         guard let idx = all.firstIndex(where: { $0.id == segment.id }) else {
@@ -317,7 +365,9 @@ struct TranscriptDetailView: View {
         }
         let start = segment.timestamp
         let end: TimeInterval
-        if idx + 1 < all.count {
+        if all.count == 1 {
+            end = max(recording.duration, start)
+        } else if idx + 1 < all.count {
             end = max(all[idx + 1].timestamp, start)
         } else {
             end = max(recording.duration, start)

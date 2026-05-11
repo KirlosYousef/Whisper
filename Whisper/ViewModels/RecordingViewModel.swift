@@ -72,6 +72,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     private var activeTranscriptionMode: TranscriptionMode = .segments20s
     private var realtimeItemOrder: [String] = []
     private var realtimeItemTexts: [String: String] = [:]
+    private var persistedRealtimeItemTexts: [String: String] = [:]
     private var cancellables = Set<AnyCancellable>()
     private let networkMonitor = NetworkMonitor.shared
     
@@ -146,13 +147,15 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
             updateLiveTranscript(itemID: itemID, text: text)
         case .completed(let itemID, let transcript):
             finalizeLiveTranscript(itemID: itemID, transcript: transcript)
-            persistRealtimeTranscript(transcript)
+            persistRealtimeTranscript(itemID: itemID, transcript: transcript)
         case .failed(let message):
             isRealtimeConnected = false
             isRealtimeFallbackActive = true
             hidesSegmentRowsDuringRealtime = false
+            activeRecording?.transcriptionModeRawValue = TranscriptionMode.segments20s.rawValue
+            try? modelContext.save()
             realtimeStatusText = "Realtime stopped. Continuing with 20-second segments."
-            errorMessage = "Realtime transcription stopped. Falling back to 20-second segments."
+            errorMessage = "Realtime transcription stopped (\(message)). Falling back to 20-second segments."
             AnalyticsService.shared.trackEvent("Realtime Transcription Failed", properties: [
                 "error": message
             ])
@@ -169,6 +172,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         liveTranscriptWords = []
         realtimeItemOrder = []
         realtimeItemTexts = [:]
+        persistedRealtimeItemTexts = [:]
         realtimeStatusText = nil
         isRealtimeConnected = false
         isRealtimeFallbackActive = false
@@ -179,14 +183,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         registerRealtimeItemIfNeeded(itemID)
 
         let current = realtimeItemTexts[itemID] ?? ""
-        let trimmedCurrent = current.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedIncoming = text.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        if trimmedIncoming.hasPrefix(trimmedCurrent), !trimmedCurrent.isEmpty {
-            realtimeItemTexts[itemID] = text
-        } else {
-            realtimeItemTexts[itemID] = current + text
-        }
+        realtimeItemTexts[itemID] = mergedRealtimeItemText(current: current, incoming: text)
 
         refreshLiveTranscript()
     }
@@ -206,6 +203,52 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         }
     }
 
+    private func mergedRealtimeItemText(current: String, incoming: String) -> String {
+        let trimmedCurrent = current.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedIncoming = incoming.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedIncoming.isEmpty else { return trimmedCurrent }
+        guard !trimmedCurrent.isEmpty else { return trimmedIncoming }
+
+        if trimmedIncoming.hasPrefix(trimmedCurrent) {
+            return trimmedIncoming
+        }
+
+        // Some realtime updates can revise already emitted words.
+        // Prefer replacement when an incoming phrase overlaps substantially.
+        let incomingWords = trimmedIncoming.split(whereSeparator: \.isWhitespace)
+        if incomingWords.count >= 3 && wordOverlapRatio(between: trimmedCurrent, and: trimmedIncoming) >= 0.45 {
+            return trimmedIncoming
+        }
+
+        return appendWithOverlap(current: trimmedCurrent, incoming: trimmedIncoming)
+    }
+
+    private func appendWithOverlap(current: String, incoming: String) -> String {
+        let maxOverlap = min(current.count, incoming.count)
+        guard maxOverlap > 0 else { return current + incoming }
+
+        for overlap in stride(from: maxOverlap, through: 1, by: -1) {
+            if current.suffix(overlap) == incoming.prefix(overlap) {
+                return current + incoming.dropFirst(overlap)
+            }
+        }
+
+        if incoming.first?.isPunctuation == true {
+            return current + incoming
+        }
+        return current + " " + incoming
+    }
+
+    private func wordOverlapRatio(between lhs: String, and rhs: String) -> Double {
+        let lhsWords = Set(lhs.lowercased().split(whereSeparator: \.isWhitespace).map(String.init))
+        let rhsWords = Set(rhs.lowercased().split(whereSeparator: \.isWhitespace).map(String.init))
+        guard !lhsWords.isEmpty, !rhsWords.isEmpty else { return 0 }
+
+        let intersection = lhsWords.intersection(rhsWords).count
+        let union = lhsWords.union(rhsWords).count
+        return union == 0 ? 0 : Double(intersection) / Double(union)
+    }
+
     private func refreshLiveTranscript() {
         liveTranscript = realtimeItemOrder
             .compactMap { realtimeItemTexts[$0]?.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -216,18 +259,66 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
             .map(String.init)
     }
 
-    private func persistRealtimeTranscript(_ transcript: String) {
+    func usesFullTranscriptDisplay(for recording: Recording) -> Bool {
+        if activeRecording?.id == recording.id {
+            return activeTranscriptionMode == .realtimeOpenAI && !isRealtimeFallbackActive
+        }
+
+        return recording.transcriptionModeRawValue == TranscriptionMode.realtimeOpenAI.rawValue ||
+            hasLegacyRealtimeMicroSegments(for: recording)
+    }
+
+    func transcriptWords(for recording: Recording) -> [String] {
+        let source: String
+        let persistedTranscript = recording.fullTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+        if activeRecording?.id == recording.id && isRecording && !liveTranscriptWords.isEmpty {
+            source = liveTranscript
+        } else if !persistedTranscript.isEmpty {
+            source = persistedTranscript
+        } else {
+            source = liveTranscript
+        }
+
+        return source
+            .split(whereSeparator: { $0.isWhitespace || $0.isNewline })
+            .map(String.init)
+    }
+
+    private func hasLegacyRealtimeMicroSegments(for recording: Recording) -> Bool {
+        let completedTextSegments = segments(for: recording).filter {
+            $0.status == "completed" &&
+            !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        guard completedTextSegments.count > 1, recording.duration > 1 else { return false }
+
+        let latestTimestamp = completedTextSegments.map(\.timestamp).max() ?? 0
+        return latestTimestamp < 1
+    }
+
+    private func persistRealtimeTranscript(itemID: String, transcript: String) {
         let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, let rec = activeRecording else { return }
+        guard !trimmed.isEmpty,
+              activeTranscriptionMode == .realtimeOpenAI,
+              !isRealtimeFallbackActive,
+              let rec = activeRecording else { return }
 
         let saveCompletedText: (String) -> Void = { [weak self] finalText in
             guard let self else { return }
-            let targetSegment = self.nextRealtimeSegment(for: rec)
-            targetSegment.status = "completed"
-            targetSegment.text = finalText
+            self.registerRealtimeItemIfNeeded(itemID)
+            self.persistedRealtimeItemTexts[itemID] = finalText
 
-            if rec.title == nil && !finalText.isEmpty {
-                let textCopy = finalText
+            let fullText = self.realtimeItemOrder
+                .compactMap { self.persistedRealtimeItemTexts[$0]?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .joined(separator: " ")
+            guard !fullText.isEmpty else { return }
+
+            let targetSegment = self.realtimeTranscriptSegment(for: rec)
+            targetSegment.status = "completed"
+            targetSegment.text = fullText
+
+            if rec.title == nil {
+                let textCopy = fullText
                 Task { @MainActor in
                     let (shortTitle, _) = await SummaryService.generateShortSummary(for: textCopy)
                     rec.title = shortTitle
@@ -256,17 +347,16 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         }
     }
 
-    private func nextRealtimeSegment(for recording: Recording) -> TranscriptionSegment {
+    private func realtimeTranscriptSegment(for recording: Recording) -> TranscriptionSegment {
         let segments = (fetchSegments(for: recording) ?? []).sorted { $0.timestamp < $1.timestamp }
-        if let segment = segments.first(where: { $0.status == "processing" && $0.text.isEmpty }) {
+        if let segment = segments.first(where: { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) {
             return segment
         }
 
-        let timestamp = segments.last.map { $0.timestamp + 0.01 } ?? recording.duration
         let segment = TranscriptionSegment(
             text: "",
             status: "processing",
-            timestamp: timestamp,
+            timestamp: 0,
             filePath: recording.filePath,
             recording: recording
         )
@@ -322,7 +412,12 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                     let effective = self.sessionTranslationLanguage
                     self.activeTargetTranslationLanguage = (effective.lowercased() == "auto") ? nil : effective
                     // Create a new Recording for this session
-                    let rec = Recording(duration: 0, filePath: filePath ?? UUID().uuidString, title: nil)
+                    let rec = Recording(
+                        duration: 0,
+                        filePath: filePath ?? UUID().uuidString,
+                        title: nil,
+                        transcriptionModeRawValue: self.activeTranscriptionMode.rawValue
+                    )
                     self.modelContext.insert(rec)
                     self.activeRecording = rec
                     self.recordings.insert(rec, at: 0)
@@ -477,18 +572,21 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         }
         // Update duration
         rec.duration += duration
-        let segment = TranscriptionSegment(text: "", status: "processing", timestamp: startTime, filePath: url.path, recording: rec)
-        self.modelContext.insert(segment)
-        try? self.modelContext.save()
-        self.fetchRecordings()
 
         if activeTranscriptionMode == .realtimeOpenAI && !isRealtimeFallbackActive {
             AnalyticsService.shared.trackEvent("Realtime Audio Segment Saved", properties: [
                 "segment_duration": duration,
                 "segment_start_time": startTime
             ])
+            try? self.modelContext.save()
+            self.fetchRecordings()
             return
         }
+
+        let segment = TranscriptionSegment(text: "", status: "processing", timestamp: startTime, filePath: url.path, recording: rec)
+        self.modelContext.insert(segment)
+        try? self.modelContext.save()
+        self.fetchRecordings()
 
         // Check if we're online before attempting transcription
         if self.isOnline {

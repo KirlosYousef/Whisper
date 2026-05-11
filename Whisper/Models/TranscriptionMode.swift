@@ -18,9 +18,9 @@ enum TranscriptionMode: String, CaseIterable, Identifiable {
     var settingsTitle: String {
         switch self {
         case .segments20s:
-            return "20-second segments"
+            return "20s segments"
         case .realtimeOpenAI:
-            return "OpenAI realtime"
+            return "Realtime"
         }
     }
 

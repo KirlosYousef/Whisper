@@ -207,46 +207,32 @@ struct SettingsView: View {
     }
 
     private var transcriptionModeRow: some View {
-        HStack(spacing: 12) {
-            let bg = colorScheme == .dark ? Color.white.opacity(0.12) : Color.black.opacity(0.06)
-            let fg = colorScheme == .dark ? Color.white : Color.black
-            RoundedRectangle(cornerRadius: AppTheme.smallRadius, style: .continuous)
-                .fill(bg)
-                .frame(width: 40, height: 40)
-                .overlay(
-                    Image(systemName: "waveform.and.mic")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundColor(fg)
-                )
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Transcription Mode")
-                    .font(.app(.medium, size: 17))
-                    .foregroundColor(.primary)
-                Text(store.transcriptionMode.settingsSubtitle)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-
-            Spacer(minLength: 8)
-
-            Picker("Transcription Mode", selection: $store.transcriptionModeRawValue) {
+        Menu {
+            Picker("Transcription Mode", selection: Binding(
+                get: { store.transcriptionModeRawValue },
+                set: { newValue in
+                    let oldValue = store.transcriptionModeRawValue
+                    guard oldValue != newValue else { return }
+                    store.transcriptionModeRawValue = newValue
+                    AnalyticsService.shared.trackEvent("Transcription Mode Changed", properties: [
+                        "old_mode": oldValue,
+                        "new_mode": newValue
+                    ])
+                    HapticsManager.shared.selection()
+                }
+            )) {
                 ForEach(TranscriptionMode.allCases) { mode in
-                    Text(mode.title).tag(mode.rawValue)
+                    Text(mode.settingsTitle).tag(mode.rawValue)
                 }
             }
-            .labelsHidden()
-            .pickerStyle(.segmented)
-            .frame(maxWidth: 220)
-            .onChange(of: store.transcriptionModeRawValue) { oldValue, newValue in
-                AnalyticsService.shared.trackEvent("Transcription Mode Changed", properties: [
-                    "old_mode": oldValue,
-                    "new_mode": newValue
-                ])
-                HapticsManager.shared.selection()
-            }
+        } label: {
+            SettingsRow(
+                iconName: "waveform.and.mic",
+                title: "Transcription Mode",
+                trailingText: store.transcriptionMode.settingsTitle
+            )
         }
-        .padding(.vertical, 8)
+        .buttonStyle(.plain)
     }
     
 }

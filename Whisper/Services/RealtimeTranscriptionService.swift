@@ -10,6 +10,15 @@ enum RealtimeTranscriptionEvent {
 }
 
 final class RealtimeTranscriptionService {
+    private enum RealtimeTuning {
+        static let useServerVAD = false
+        static let transcriptionDelay: String? = nil
+        static let noiseReductionType = "near_field"
+        static let vadThreshold = 0.62
+        static let vadPrefixPaddingMs = 420
+        static let vadSilenceDurationMs = 720
+    }
+
     private let apiKey: String
     private var webSocket: URLSessionWebSocketTask?
     private var isSocketOpen = false
@@ -19,6 +28,7 @@ final class RealtimeTranscriptionService {
     private var pendingAudioChunks: [Data] = []
     private var pendingAudioByteCount = 0
     private var commitTimer: DispatchSourceTimer?
+    private var skippedCommitIntervals = 0
     private let sendQueue = DispatchQueue(label: "RealtimeTranscriptionService.send")
     private let minimumCommitByteCount = 4_800
     private let targetCommitByteCount = 48_000
@@ -57,7 +67,9 @@ final class RealtimeTranscriptionService {
         isSessionReady = false
         receiveNextMessage()
         sendSessionUpdate(language: language)
-        startCommitTimer()
+        if !RealtimeTuning.useServerVAD {
+            startCommitTimer()
+        }
     }
 
     func sendAudio(_ pcm16Data: Data) {
@@ -95,6 +107,17 @@ final class RealtimeTranscriptionService {
         var transcription: [String: Any] = [
             "model": "gpt-realtime-whisper"
         ]
+        if let delay = RealtimeTuning.transcriptionDelay {
+            transcription["delay"] = delay
+        }
+        let turnDetection: Any = RealtimeTuning.useServerVAD
+            ? [
+                "type": "server_vad",
+                "threshold": RealtimeTuning.vadThreshold,
+                "prefix_padding_ms": RealtimeTuning.vadPrefixPaddingMs,
+                "silence_duration_ms": RealtimeTuning.vadSilenceDurationMs
+            ]
+            : NSNull()
 
         if let language, !language.isEmpty, language.lowercased() != "auto" {
             transcription["language"] = language
@@ -111,10 +134,10 @@ final class RealtimeTranscriptionService {
                             "rate": 24000
                         ],
                         "noise_reduction": [
-                            "type": "near_field"
+                            "type": RealtimeTuning.noiseReductionType
                         ],
                         "transcription": transcription,
-                        "turn_detection": NSNull()
+                        "turn_detection": turnDetection
                     ]
                 ]
             ]
@@ -138,11 +161,31 @@ final class RealtimeTranscriptionService {
     }
 
     private func commitAudioBufferOnQueue(force: Bool) {
-        let requiredBytes = force ? minimumCommitByteCount : targetCommitByteCount
-        guard isSocketOpen, isSessionReady, uncommittedAudioByteCount >= requiredBytes else {
+        guard isSocketOpen, isSessionReady else {
             return
         }
 
+        let requiredBytes: Int
+        if force {
+            requiredBytes = minimumCommitByteCount
+        } else if uncommittedAudioByteCount >= targetCommitByteCount {
+            requiredBytes = targetCommitByteCount
+        } else {
+            skippedCommitIntervals += 1
+            // Avoid stalling if audio cadence is lower than expected.
+            // After a few timer intervals, accept smaller commits.
+            if skippedCommitIntervals >= 3 && uncommittedAudioByteCount >= minimumCommitByteCount {
+                requiredBytes = minimumCommitByteCount
+            } else {
+                return
+            }
+        }
+
+        guard uncommittedAudioByteCount >= requiredBytes else {
+            return
+        }
+
+        skippedCommitIntervals = 0
         uncommittedAudioByteCount = 0
         sendJSONOnQueue(["type": "input_audio_buffer.commit"])
     }

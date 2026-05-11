@@ -25,10 +25,10 @@ struct LiveTranscriptView: View {
     private var header: some View {
         HStack(spacing: 8) {
             Circle()
-                .fill(isConnected ? Color.green : Color.orange)
+                .fill(statusColor)
                 .frame(width: 8, height: 8)
 
-            Text(isConnected ? "Realtime transcription" : "Preparing realtime")
+            Text(headerTitle)
                 .font(.app(.semibold, size: 13))
                 .foregroundColor(.secondary)
 
@@ -57,7 +57,7 @@ struct LiveTranscriptView: View {
     private var transcriptText: some View {
         Group {
             if words.isEmpty {
-                Text(isRecording ? "Listening..." : "Your words will appear here.")
+                Text(isRecording ? "Listening..." : "Transcript will appear here.")
                     .font(.app(.medium, size: 24))
                     .foregroundColor(.secondary)
             } else {
@@ -100,6 +100,22 @@ struct LiveTranscriptView: View {
             guard highlightVersion == version else { return }
             highlightedWordKey = nil
         }
+    }
+
+    private var headerTitle: String {
+        if !isRecording {
+            return "Full transcript"
+        }
+
+        return isConnected ? "Realtime transcription" : "Preparing realtime"
+    }
+
+    private var statusColor: Color {
+        if !isRecording {
+            return .secondary
+        }
+
+        return isConnected ? .green : .orange
     }
 
     private var background: some View {

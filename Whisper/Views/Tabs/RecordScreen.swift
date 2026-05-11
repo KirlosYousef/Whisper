@@ -77,16 +77,16 @@ struct RecordScreen: View {
         if let rec = viewModel.activeRecording {
             ScrollView {
                 VStack(alignment: .leading, spacing: 8) {
-                    if shouldShowLiveTranscript {
+                    if shouldShowLiveTranscript(for: rec) {
                         LiveTranscriptView(
-                            words: viewModel.liveTranscriptWords,
+                            words: viewModel.transcriptWords(for: rec),
                             isConnected: viewModel.isRealtimeConnected,
                             isRecording: viewModel.isRecording
                         )
                         .padding(.bottom, 8)
                     }
 
-                    if !viewModel.hidesSegmentRowsDuringRealtime {
+                    if shouldShowSegmentRows(for: rec) {
                         ForEach(viewModel.segments(for: rec), id: \.id) { seg in
                             SegmentRow(segment: seg) {
                                 viewModel.play(segment: seg)
@@ -101,10 +101,23 @@ struct RecordScreen: View {
         }
     }
 
-    private var shouldShowLiveTranscript: Bool {
-        viewModel.isRecording &&
-        !viewModel.isRealtimeFallbackActive &&
-        (viewModel.isRealtimeConnected || viewModel.realtimeStatusText != nil || !viewModel.liveTranscriptWords.isEmpty)
+    private func shouldShowLiveTranscript(for recording: Recording) -> Bool {
+        let usesRealtimeLayout = viewModel.usesFullTranscriptDisplay(for: recording)
+        guard usesRealtimeLayout else { return false }
+
+        let hasTranscript = !viewModel.transcriptWords(for: recording).isEmpty
+        let isRealtimeSessionVisible = viewModel.isRecording &&
+            (viewModel.isRealtimeConnected || viewModel.realtimeStatusText != nil || hasTranscript)
+
+        return isRealtimeSessionVisible ||
+            hasTranscript
+    }
+
+    private func shouldShowSegmentRows(for recording: Recording) -> Bool {
+        let hasFullTranscript = viewModel.usesFullTranscriptDisplay(for: recording) &&
+            !viewModel.transcriptWords(for: recording).isEmpty
+
+        return !viewModel.hidesSegmentRowsDuringRealtime && !hasFullTranscript
     }
     
     private var micArea: some View {

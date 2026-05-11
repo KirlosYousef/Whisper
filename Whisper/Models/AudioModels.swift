@@ -18,14 +18,16 @@ public final class Recording: Identifiable {
     public var todoList: [String]?
     public var keywords: [String]?
     public var title: String?
+    public var transcriptionModeRawValue: String?
     @Relationship(deleteRule: .cascade, inverse: \TranscriptionSegment.recording) public var segments: [TranscriptionSegment] = []
     
-    public init(id: UUID = UUID(), createdAt: Date = Date(), duration: TimeInterval, filePath: String, title: String? = nil) {
+    public init(id: UUID = UUID(), createdAt: Date = Date(), duration: TimeInterval, filePath: String, title: String? = nil, transcriptionModeRawValue: String? = nil) {
         self.id = id
         self.createdAt = createdAt
         self.duration = duration
         self.filePath = filePath
         self.title = title
+        self.transcriptionModeRawValue = transcriptionModeRawValue
     }
     
     var sortedSegments: [TranscriptionSegment] {
@@ -34,7 +36,7 @@ public final class Recording: Identifiable {
     
     var fullTranscript: String {
         sortedSegments
-            .filter { $0.status == "completed" }
+            .filter { $0.status == "completed" && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
             .map { $0.text }
             .joined(separator: " ")
     }
