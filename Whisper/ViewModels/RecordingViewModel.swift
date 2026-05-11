@@ -73,6 +73,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     private var realtimeItemOrder: [String] = []
     private var realtimeItemTexts: [String: String] = [:]
     private var persistedRealtimeItemTexts: [String: String] = [:]
+    private var realtimeDisconnectWorkItem: DispatchWorkItem?
     private var cancellables = Set<AnyCancellable>()
     private let networkMonitor = NetworkMonitor.shared
     
@@ -168,6 +169,8 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     }
 
     private func resetLiveTranscript() {
+        realtimeDisconnectWorkItem?.cancel()
+        realtimeDisconnectWorkItem = nil
         liveTranscript = ""
         liveTranscriptWords = []
         realtimeItemOrder = []
@@ -384,6 +387,9 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     }
     
     func startRecording() {
+        realtimeDisconnectWorkItem?.cancel()
+        realtimeDisconnectWorkItem = nil
+
         let requestedMode = settingsStore.transcriptionMode
         let canUseRealtime = requestedMode == .realtimeOpenAI && isOnline && realtimeTranscriptionService.isConfigured
         activeTranscriptionMode = canUseRealtime ? .realtimeOpenAI : .segments20s
@@ -454,13 +460,17 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                 if self.activeTranscriptionMode == .realtimeOpenAI {
                     self.realtimeStatusText = "Finishing realtime transcript..."
                     self.realtimeTranscriptionService.finish()
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                    self.realtimeDisconnectWorkItem?.cancel()
+                    let disconnectWork = DispatchWorkItem { [weak self] in
+                        guard let self else { return }
                         self.realtimeTranscriptionService.disconnect()
                         self.completeEmptyRealtimeSegments()
                         if let rec = self.activeRecording {
                             self.attemptAutoSummarizeIfComplete(for: rec)
                         }
                     }
+                    self.realtimeDisconnectWorkItem = disconnectWork
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2, execute: disconnectWork)
                 }
                 
                 if let rec = self.activeRecording {

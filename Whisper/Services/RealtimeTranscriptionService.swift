@@ -24,6 +24,7 @@ final class RealtimeTranscriptionService {
     private var isSocketOpen = false
     private var isSessionReady = false
     private var isStopping = false
+    private var connectionToken = UUID()
     private var uncommittedAudioByteCount = 0
     private var pendingAudioChunks: [Data] = []
     private var pendingAudioByteCount = 0
@@ -50,6 +51,8 @@ final class RealtimeTranscriptionService {
         }
 
         disconnect()
+        let token = UUID()
+        connectionToken = token
         isStopping = false
 
         guard let url = URL(string: "wss://api.openai.com/v1/realtime?intent=transcription") else {
@@ -65,7 +68,8 @@ final class RealtimeTranscriptionService {
         task.resume()
         isSocketOpen = true
         isSessionReady = false
-        receiveNextMessage()
+        skippedCommitIntervals = 0
+        receiveNextMessage(token: token)
         sendSessionUpdate(language: language)
         if !RealtimeTuning.useServerVAD {
             startCommitTimer()
@@ -92,12 +96,14 @@ final class RealtimeTranscriptionService {
 
     func disconnect() {
         isStopping = true
+        connectionToken = UUID()
         isSocketOpen = false
         isSessionReady = false
         stopCommitTimer()
         uncommittedAudioByteCount = 0
         pendingAudioChunks = []
         pendingAudioByteCount = 0
+        skippedCommitIntervals = 0
         webSocket?.cancel(with: .goingAway, reason: nil)
         webSocket = nil
         onEvent?(.disconnected)
@@ -242,15 +248,16 @@ final class RealtimeTranscriptionService {
         }
     }
 
-    private func receiveNextMessage() {
+    private func receiveNextMessage(token: UUID) {
         webSocket?.receive { [weak self] result in
             guard let self else { return }
+            guard token == self.connectionToken else { return }
 
             switch result {
             case .success(let message):
                 self.handle(message)
-                if self.isSocketOpen {
-                    self.receiveNextMessage()
+                if self.isSocketOpen, token == self.connectionToken {
+                    self.receiveNextMessage(token: token)
                 }
             case .failure(let error):
                 if !self.isStopping {
@@ -308,6 +315,7 @@ final class RealtimeTranscriptionService {
     }
 
     private func handleError(_ error: Error) {
+        guard !isStopping else { return }
         isSocketOpen = false
         isSessionReady = false
         onEvent?(.failed(error.localizedDescription))
