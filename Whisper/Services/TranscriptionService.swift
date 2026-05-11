@@ -30,28 +30,28 @@ class TranscriptionService {
                 if let key = config["OpenAIAPIKey"] as? String {
                     print("✅ Found OpenAIAPIKey in Config.plist")
                     
-                    if key != "YOUR_API_KEY_HERE" && !key.isEmpty {
+                    if key != OpenAIConfiguration.placeholderAPIKey && !key.isEmpty {
                         self.apiKey = key
                         print("✅ API key loaded successfully: \(String(key.prefix(10)))...")
                     } else {
-                        self.apiKey = "YOUR_API_KEY_HERE"
+                        self.apiKey = OpenAIConfiguration.placeholderAPIKey
                         print("⚠️  API key is placeholder or empty")
                     }
                 } else {
-                    self.apiKey = "YOUR_API_KEY_HERE"
+                    self.apiKey = OpenAIConfiguration.placeholderAPIKey
                     print("❌ OpenAIAPIKey not found in Config.plist")
                 }
             } else {
-                self.apiKey = "YOUR_API_KEY_HERE"
+                self.apiKey = OpenAIConfiguration.placeholderAPIKey
                 print("❌ Failed to load Config.plist as NSDictionary")
             }
         } else {
-            self.apiKey = "YOUR_API_KEY_HERE"
+            self.apiKey = OpenAIConfiguration.placeholderAPIKey
             print("❌ Config.plist not found in app bundle")
             print("   Make sure Config.plist is added to the Xcode project")
         }
         
-        if self.apiKey == "YOUR_API_KEY_HERE" {
+        if self.apiKey == OpenAIConfiguration.placeholderAPIKey {
             print("⚠️  Warning: API key not properly configured")
             print("   Please add your OpenAI API key to Whisper/Config.plist")
             print("   The app will use local speech recognition as fallback")
@@ -91,7 +91,7 @@ class TranscriptionService {
     
     private func transcribeWithOpenAI(audioURL: URL, completion: @escaping (String?, Error?) -> Void) {
         // Check if API key is properly configured
-        guard apiKey != "YOUR_API_KEY_HERE" && !apiKey.isEmpty else {
+        guard apiKey != OpenAIConfiguration.placeholderAPIKey && !apiKey.isEmpty else {
             completion(nil, TranscriptionError.apiKeyNotConfigured)
             return
         }
@@ -227,4 +227,3 @@ private extension Data {
         }
     }
 }
-

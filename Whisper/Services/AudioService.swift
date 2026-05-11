@@ -11,8 +11,13 @@ import AVFoundation
 protocol AudioServiceDelegate: AnyObject {
     func audioService(_ service: AudioService, didFinishSegment url: URL, duration: TimeInterval, startTime: TimeInterval)
     func audioService(_ service: AudioService, didUpdateAudioLevel level: Float)
+    func audioService(_ service: AudioService, didReceiveRealtimeAudio data: Data)
     func audioService(_ service: AudioService, didInterruptRecording reason: String)
     func audioService(_ service: AudioService, didResumeRecording: Bool)
+}
+
+extension AudioServiceDelegate {
+    func audioService(_ service: AudioService, didReceiveRealtimeAudio data: Data) {}
 }
 
 class AudioService: NSObject {
@@ -25,6 +30,9 @@ class AudioService: NSObject {
     private var segmentIndex: Int = 0
     private var segmentStartTime: TimeInterval = 0
     private var audioFile: AVAudioFile?
+    private var realtimeConverter: AVAudioConverter?
+    private var realtimeInputFormat: AVAudioFormat?
+    private let realtimeOutputFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 24000, channels: 1, interleaved: true)
     private var isRecording = false
     private var isPaused = false
     private var wasInterrupted = false
@@ -252,7 +260,12 @@ class AudioService: NSObject {
         let normalizedLevel = max(0.0, min(1.0, (db + 60) / 50))
         
         DispatchQueue.main.async { [weak self] in
-            self?.delegate?.audioService(self!, didUpdateAudioLevel: normalizedLevel)
+            guard let self else { return }
+            self.delegate?.audioService(self, didUpdateAudioLevel: normalizedLevel)
+        }
+
+        if let realtimeData = convertToRealtimePCM(buffer) {
+            delegate?.audioService(self, didReceiveRealtimeAudio: realtimeData)
         }
         
         // Convert and write to file if format conversion is needed
@@ -313,6 +326,8 @@ class AudioService: NSObject {
         inputNode?.removeTap(onBus: 0)
         audioEngine?.stop()
         audioFile = nil
+        realtimeConverter = nil
+        realtimeInputFormat = nil
     }
     
     func pauseRecording() {
@@ -382,6 +397,50 @@ class AudioService: NSObject {
         currentFilePath = nil
         recordingStartTime = nil
         isRecording = false
+    }
+
+    private func convertToRealtimePCM(_ buffer: AVAudioPCMBuffer) -> Data? {
+        guard let outputFormat = realtimeOutputFormat else { return nil }
+
+        if realtimeConverter == nil || realtimeInputFormat?.isEqual(buffer.format) != true {
+            realtimeInputFormat = buffer.format
+            realtimeConverter = AVAudioConverter(from: buffer.format, to: outputFormat)
+        }
+
+        guard let converter = realtimeConverter else { return nil }
+
+        let ratio = outputFormat.sampleRate / buffer.format.sampleRate
+        let capacity = max(1, AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 1)
+        guard let convertedBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: capacity) else {
+            return nil
+        }
+
+        var didProvideInput = false
+        let inputBlock: AVAudioConverterInputBlock = { _, outStatus in
+            if didProvideInput {
+                outStatus.pointee = .noDataNow
+                return nil
+            }
+
+            didProvideInput = true
+            outStatus.pointee = .haveData
+            return buffer
+        }
+
+        var error: NSError?
+        converter.convert(to: convertedBuffer, error: &error, withInputFrom: inputBlock)
+        guard error == nil, convertedBuffer.frameLength > 0 else { return nil }
+
+        let byteCount = Int(convertedBuffer.frameLength) * MemoryLayout<Int16>.size
+        if let channelData = convertedBuffer.int16ChannelData?[0] {
+            return Data(bytes: channelData, count: byteCount)
+        }
+
+        guard let bytes = convertedBuffer.audioBufferList.pointee.mBuffers.mData else {
+            return nil
+        }
+
+        return Data(bytes: bytes, count: byteCount)
     }
     
 

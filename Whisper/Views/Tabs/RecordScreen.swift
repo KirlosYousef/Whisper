@@ -62,8 +62,13 @@ struct RecordScreen: View {
         if viewModel.isInterrupted {
             BannerView(icon: "exclamationmark.triangle.fill", title: "Recording Interrupted", subtitle: viewModel.interruptionMessage, color: .orange)
         }
-        if let error = viewModel.errorMessage {
-            Text(error).foregroundColor(.red)
+        if let status = viewModel.realtimeStatusText, viewModel.isRecording {
+            BannerView(
+                icon: viewModel.isRealtimeConnected ? "waveform" : "arrow.triangle.2.circlepath",
+                title: viewModel.isRealtimeConnected ? "Realtime Live" : "Realtime Status",
+                subtitle: status,
+                color: viewModel.isRealtimeConnected ? .green : .orange
+            )
         }
     }
     
@@ -72,17 +77,34 @@ struct RecordScreen: View {
         if let rec = viewModel.activeRecording {
             ScrollView {
                 VStack(alignment: .leading, spacing: 8) {
-                    ForEach(viewModel.segments(for: rec), id: \.id) { seg in
-                        SegmentRow(segment: seg) {
-                            viewModel.play(segment: seg)
+                    if shouldShowLiveTranscript {
+                        LiveTranscriptView(
+                            words: viewModel.liveTranscriptWords,
+                            isConnected: viewModel.isRealtimeConnected,
+                            isRecording: viewModel.isRecording
+                        )
+                        .padding(.bottom, 8)
+                    }
+
+                    if !viewModel.hidesSegmentRowsDuringRealtime {
+                        ForEach(viewModel.segments(for: rec), id: \.id) { seg in
+                            SegmentRow(segment: seg) {
+                                viewModel.play(segment: seg)
+                            }
+                            .card()
                         }
-                        .card()
                     }
                 }
                 // Keep bottom content visible above mic and translation chip
                 .padding(.bottom, docked ? 220 : 120)
             }
         }
+    }
+
+    private var shouldShowLiveTranscript: Bool {
+        viewModel.isRecording &&
+        !viewModel.isRealtimeFallbackActive &&
+        (viewModel.isRealtimeConnected || viewModel.realtimeStatusText != nil || !viewModel.liveTranscriptWords.isEmpty)
     }
     
     private var micArea: some View {
@@ -125,6 +147,3 @@ struct RecordScreen: View {
         .padding(.bottom, docked ? 8 : 0)
     }
 }
-
-
-
