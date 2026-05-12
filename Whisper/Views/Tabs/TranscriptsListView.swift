@@ -47,11 +47,6 @@ struct TranscriptsListView: View {
 				"recording_count": viewModel.recordings.count
 			])
 		}
-		.onChange(of: viewModel.errorMessage) { _, newValue in
-			if newValue != nil {
-				HapticsManager.shared.notification(.error)
-			}
-		}
 		.alert(copyAlertMessage, isPresented: $showCopyAlert) {
 			Button("OK", role: .cancel) {}
 		}
@@ -67,9 +62,6 @@ struct TranscriptsListView: View {
 			if viewModel.isInterrupted {
 				BannerView(icon: "exclamationmark.triangle.fill", title: "Recording Interrupted", subtitle: viewModel.interruptionMessage ?? "Recording will resume automatically when possible", color: .orange)
 					.padding(.horizontal)
-			}
-			if let error = viewModel.errorMessage {
-				Text(error).foregroundColor(.red).padding(.horizontal)
 			}
 			
 			ScrollView {

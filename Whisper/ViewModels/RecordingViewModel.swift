@@ -36,6 +36,7 @@ class NetworkMonitor {
 
 class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     @Published var isRecording = false
+    @Published var isStartingRecording = false
     @Published var isPaused = false
     @Published var recordings: [Recording] = []
     @Published var permissionDenied = false
@@ -53,6 +54,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     @Published var isRealtimeConnected = false
     @Published var isRealtimeFallbackActive = false
     @Published var hidesSegmentRowsDuringRealtime = false
+    @Published private(set) var preRecordingTranscriptionModeOverride: TranscriptionMode? = nil
     // Track which recordings are currently generating summaries
     @Published private var summaryLoadingRecordingIds: Set<UUID> = []
     @Published var selectedLanguage: String = "auto" {
@@ -74,6 +76,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     private var realtimeItemTexts: [String: String] = [:]
     private var persistedRealtimeItemTexts: [String: String] = [:]
     private var realtimeDisconnectWorkItem: DispatchWorkItem?
+    private var inFlightSegmentTranscriptions: Set<UUID> = []
     private var cancellables = Set<AnyCancellable>()
     private let networkMonitor = NetworkMonitor.shared
     
@@ -81,6 +84,14 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     @Published private(set) var activeRecording: Recording? = nil
     // Effective translation language for this session (captured at start)
     private(set) var activeTargetTranslationLanguage: String? = nil
+
+    private func setErrorMessage(_ message: String) {
+        errorMessage = message
+    }
+
+    private func clearErrorMessage() {
+        errorMessage = nil
+    }
     
     init(modelContext: ModelContext) {
         self.modelContext = modelContext
@@ -113,6 +124,19 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         return allSegments.filter { $0.recording?.id == recording.id }
             .sorted { $0.timestamp < $1.timestamp }
     }
+
+    var preRecordingTranscriptionMode: TranscriptionMode {
+        preRecordingTranscriptionModeOverride ?? settingsStore.transcriptionMode
+    }
+
+    func setPreRecordingTranscriptionMode(_ mode: TranscriptionMode) {
+        preRecordingTranscriptionModeOverride = mode
+        settingsStore.transcriptionMode = mode
+    }
+
+    private func resetPreRecordingTranscriptionMode() {
+        preRecordingTranscriptionModeOverride = nil
+    }
     
     func requestPermission() {
         AnalyticsService.shared.trackEvent("Recording Permission Requested", properties: nil)
@@ -143,6 +167,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
             isRealtimeConnected = true
             isRealtimeFallbackActive = false
             realtimeStatusText = "Realtime transcription is live"
+            clearErrorMessage()
             AnalyticsService.shared.trackEvent("Realtime Transcription Connected", properties: nil)
         case .delta(let itemID, let text):
             updateLiveTranscript(itemID: itemID, text: text)
@@ -156,7 +181,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
             activeRecording?.transcriptionModeRawValue = TranscriptionMode.segments20s.rawValue
             try? modelContext.save()
             realtimeStatusText = "Realtime stopped. Continuing with 20-second segments."
-            errorMessage = "Realtime transcription stopped (\(message)). Falling back to 20-second segments."
+            setErrorMessage("Realtime transcription stopped (\(message)). Falling back to 20-second segments.")
             AnalyticsService.shared.trackEvent("Realtime Transcription Failed", properties: [
                 "error": message
             ])
@@ -387,31 +412,35 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     }
     
     func startRecording() {
+        guard !isStartingRecording else { return }
+        isStartingRecording = true
         realtimeDisconnectWorkItem?.cancel()
         realtimeDisconnectWorkItem = nil
+        inFlightSegmentTranscriptions.removeAll()
 
-        let requestedMode = settingsStore.transcriptionMode
+        let requestedMode = preRecordingTranscriptionMode
         let canUseRealtime = requestedMode == .realtimeOpenAI && isOnline && realtimeTranscriptionService.isConfigured
         activeTranscriptionMode = canUseRealtime ? .realtimeOpenAI : .segments20s
         resetLiveTranscript()
+        clearErrorMessage()
 
         if requestedMode == .realtimeOpenAI && !canUseRealtime {
             isRealtimeFallbackActive = true
             realtimeStatusText = isOnline ? "Realtime unavailable. Recording with 20-second segments." : "Offline. Recording with 20-second segments."
-            errorMessage = realtimeStatusText
+            setErrorMessage(realtimeStatusText ?? "Realtime unavailable. Recording with 20-second segments.")
         }
 
         if activeTranscriptionMode == .segments20s {
             transcriptionService.requestSpeechRecognitionPermission()
         } else {
             hidesSegmentRowsDuringRealtime = true
-            realtimeStatusText = "Connecting to realtime transcription..."
-            realtimeTranscriptionService.connect(language: selectedLanguage == "auto" ? nil : selectedLanguage)
+            realtimeStatusText = "Preparing realtime..."
         }
         
         audioService.startRecording { success, filePath in
             if success {
                 DispatchQueue.main.async {
+                    self.isStartingRecording = false
                     self.isRecording = true
                     self.isPaused = false
                     // Capture the effective target translation language for this session
@@ -433,8 +462,21 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                         "is_online": self.isOnline,
                         "transcription_mode": self.activeTranscriptionMode.rawValue
                     ])
+
+                    if self.activeTranscriptionMode == .realtimeOpenAI {
+                        self.realtimeStatusText = "Connecting to realtime transcription..."
+                        self.realtimeTranscriptionService.connect(language: self.selectedLanguage == "auto" ? nil : self.selectedLanguage)
+                    }
                 }
             } else {
+                DispatchQueue.main.async {
+                    self.isStartingRecording = false
+                    self.hidesSegmentRowsDuringRealtime = false
+                    self.realtimeStatusText = nil
+                    if let filePath, !filePath.isEmpty {
+                        self.setErrorMessage(filePath)
+                    }
+                }
                 AnalyticsService.shared.trackEvent("Recording Start Failed", properties: nil)
             }
         }
@@ -452,10 +494,12 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     }
     
     func stopRecording() {
+        isStartingRecording = false
         audioService.stopRecording { duration, filePath in
             DispatchQueue.main.async {
                 self.isRecording = false
                 self.isPaused = false
+                self.resetPreRecordingTranscriptionMode()
                 self.hidesSegmentRowsDuringRealtime = false
                 if self.activeTranscriptionMode == .realtimeOpenAI {
                     self.realtimeStatusText = "Finishing realtime transcript..."
@@ -471,6 +515,8 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                     }
                     self.realtimeDisconnectWorkItem = disconnectWork
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.2, execute: disconnectWork)
+                } else if let rec = self.activeRecording {
+                    self.ensurePendingSegmentsAreQueuedAfterStop(for: rec)
                 }
                 
                 if let rec = self.activeRecording {
@@ -600,6 +646,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
 
         // Check if we're online before attempting transcription
         if self.isOnline {
+            self.inFlightSegmentTranscriptions.insert(segment.id)
             AnalyticsService.shared.trackEvent("Transcription Started", properties: [
                 "segment_duration": duration,
                 "segment_start_time": startTime,
@@ -608,6 +655,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
             // Start transcription
             self.transcriptionService.transcribe(audioURL: url, segmentStart: startTime, duration: duration) { [weak self] text, error in
                 DispatchQueue.main.async {
+                    self?.inFlightSegmentTranscriptions.remove(segment.id)
                     if let error = error {
                         if let transcriptionError = error as? TranscriptionError, transcriptionError == .noNetwork {
                             segment.status = "queued"
@@ -617,7 +665,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                             ])
                         } else {
                             segment.status = "failed"
-                            self?.errorMessage = "Transcription failed: \(error.localizedDescription)"
+                            self?.setErrorMessage("Transcription failed: \(error.localizedDescription)")
                             AnalyticsService.shared.trackEvent("Transcription Failed", properties: [
                                 "error": error.localizedDescription,
                                 "segment_duration": duration
@@ -625,6 +673,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                         }
                         segment.text = ""
                     } else if let text = text {
+                        self?.clearErrorMessage()
                         AnalyticsService.shared.trackEvent("Transcription Completed", properties: [
                             "segment_duration": duration,
                             "text_length": text.count,
@@ -722,17 +771,20 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
             for segment in queuedSegments {
                 if let _ = segment.recording {
                     let audioURL = URL(fileURLWithPath: segment.filePath)
+                    inFlightSegmentTranscriptions.insert(segment.id)
                     transcriptionService.transcribe(
                         audioURL: audioURL,
                         segmentStart: segment.timestamp,
                         duration: 30.0
                     ) { [weak self] text, error in
                         DispatchQueue.main.async {
+                            self?.inFlightSegmentTranscriptions.remove(segment.id)
                             if let error = error {
                                 segment.status = "failed"
                                 segment.text = ""
-                                self?.errorMessage = "Transcription failed: \(error.localizedDescription)"
+                                self?.setErrorMessage("Transcription failed: \(error.localizedDescription)")
                             } else if let text = text {
+                                self?.clearErrorMessage()
                                 // Use default translation language for queued items
                                 let defaultLang = SettingsStore().defaultTranslationLanguage
                                 if !defaultLang.isEmpty && defaultLang.lowercased() != "auto" {
@@ -761,6 +813,23 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                 }
             }
         }
+    }
+
+    private func ensurePendingSegmentsAreQueuedAfterStop(for recording: Recording) {
+        let pending = segments(for: recording).filter {
+            $0.status == "processing" &&
+            $0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            !inFlightSegmentTranscriptions.contains($0.id)
+        }
+        guard !pending.isEmpty else { return }
+
+        for segment in pending {
+            segment.status = "queued"
+        }
+
+        try? modelContext.save()
+        fetchRecordings()
+        processQueuedTranscriptions()
     }
     
     func checkNetworkStatus() {
@@ -867,9 +936,10 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         // Prefer exact match within 0.5s; otherwise pick the nearest by absolute difference
         if let exact = sorted.first(where: { abs($0.timestamp - timestamp) <= 0.5 }) {
             guard !exact.filePath.isEmpty, FileManager.default.fileExists(atPath: exact.filePath) else {
-                DispatchQueue.main.async { self.errorMessage = "Audio file not found for this segment." }
+                DispatchQueue.main.async { self.setErrorMessage("Audio file not found for this segment.") }
                 return
             }
+            clearErrorMessage()
             let url = URL(fileURLWithPath: exact.filePath)
             PlaybackService.shared.playSegment(at: url)
             return
@@ -878,9 +948,10 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
             return
         }
         guard !nearest.filePath.isEmpty, FileManager.default.fileExists(atPath: nearest.filePath) else {
-            DispatchQueue.main.async { self.errorMessage = "Audio file not found for this segment." }
+            DispatchQueue.main.async { self.setErrorMessage("Audio file not found for this segment.") }
             return
         }
+        clearErrorMessage()
         PlaybackService.shared.playSegment(at: URL(fileURLWithPath: nearest.filePath))
     }
     
@@ -891,6 +962,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                 "segment_timestamp": segment.timestamp,
                 "has_text": !segment.text.isEmpty
             ])
+            clearErrorMessage()
             PlaybackService.shared.playSegment(at: URL(fileURLWithPath: segment.filePath))
             return
         }
@@ -901,11 +973,12 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
             if fm.fileExists(atPath: candidate.path) {
                 segment.filePath = candidate.path
                 try? modelContext.save()
+                clearErrorMessage()
                 PlaybackService.shared.playSegment(at: candidate)
                 return
             }
         }
-        DispatchQueue.main.async { self.errorMessage = "Audio file not found for this segment." }
+        DispatchQueue.main.async { self.setErrorMessage("Audio file not found for this segment.") }
     }
     
     func clearAllRecordings() {
