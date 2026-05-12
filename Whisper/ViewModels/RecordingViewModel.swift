@@ -131,6 +131,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
 
     func setPreRecordingTranscriptionMode(_ mode: TranscriptionMode) {
         preRecordingTranscriptionModeOverride = mode
+        settingsStore.transcriptionMode = mode
     }
 
     private func resetPreRecordingTranscriptionMode() {

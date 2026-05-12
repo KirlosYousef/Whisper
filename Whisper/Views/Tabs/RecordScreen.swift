@@ -84,7 +84,7 @@ struct RecordScreen: View {
                 }
 			}
 			// Keep chip above the mic when docked
-			.padding(.bottom, docked ? 160 : 24)
+			.padding(.bottom, docked ? 140 : 24)
 		}
     }
     
