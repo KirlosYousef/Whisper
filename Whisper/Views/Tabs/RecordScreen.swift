@@ -29,8 +29,6 @@ struct RecordScreen: View {
 				withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
 					docked = true
 				}
-                PlaybackService.shared.stop()
-                playingSegmentId = nil
 			}
 		}
 		.onAppear {
@@ -213,6 +211,8 @@ struct RecordScreen: View {
 					if viewModel.isRecording {
 						viewModel.stopRecording()
 					} else {
+                        PlaybackService.shared.stop()
+                        playingSegmentId = nil
 						viewModel.requestPermission()
 						if !viewModel.permissionDenied {
 							viewModel.startRecording()
