@@ -32,7 +32,7 @@ final class RealtimeTranscriptionService {
     private var skippedCommitIntervals = 0
     private let sendQueue = DispatchQueue(label: "RealtimeTranscriptionService.send")
     private let minimumCommitByteCount = 4_800
-    private let targetCommitByteCount = 48_000
+    private let targetCommitByteCount = 24_000
     private let maximumPendingAudioByteCount = 96_000
     var onEvent: ((RealtimeTranscriptionEvent) -> Void)?
 
@@ -179,8 +179,8 @@ final class RealtimeTranscriptionService {
         } else {
             skippedCommitIntervals += 1
             // Avoid stalling if audio cadence is lower than expected.
-            // After a few timer intervals, accept smaller commits.
-            if skippedCommitIntervals >= 3 && uncommittedAudioByteCount >= minimumCommitByteCount {
+            // After one timer interval, accept smaller commits.
+            if skippedCommitIntervals >= 1 && uncommittedAudioByteCount >= minimumCommitByteCount {
                 requiredBytes = minimumCommitByteCount
             } else {
                 return

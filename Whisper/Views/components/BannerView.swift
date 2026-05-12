@@ -46,4 +46,26 @@ struct BannerView: View {
     }
 }
 
+struct ErrorCapsuleView: View {
+    let text: String
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        Text(text)
+            .font(.app(.medium, size: 14))
+            .foregroundColor(.black)
+            .multilineTextAlignment(.leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(Color.red.opacity(colorScheme == .dark ? 0.3 : 0.18), in: Capsule())
+            .overlay(
+                Capsule()
+                    .stroke(Color.red.opacity(colorScheme == .dark ? 0.45 : 0.25), lineWidth: 1)
+            )
+            .accessibilityLabel("Error")
+            .accessibilityValue(text)
+    }
+}
+
 

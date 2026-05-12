@@ -13,9 +13,30 @@ struct TranscriptSegmentCard<TrailingMenu: View>: View {
     let text: String
     let isPlaying: Bool
     let isDisabled: Bool
+    let showDisabledWarningIcon: Bool
     let onPlayPause: () -> Void
     @ViewBuilder var trailingMenu: () -> TrailingMenu
     @Environment(\.colorScheme) private var colorScheme
+
+    init(
+        isActive: Bool,
+        timeRange: String,
+        text: String,
+        isPlaying: Bool,
+        isDisabled: Bool,
+        showDisabledWarningIcon: Bool = true,
+        onPlayPause: @escaping () -> Void,
+        @ViewBuilder trailingMenu: @escaping () -> TrailingMenu
+    ) {
+        self.isActive = isActive
+        self.timeRange = timeRange
+        self.text = text
+        self.isPlaying = isPlaying
+        self.isDisabled = isDisabled
+        self.showDisabledWarningIcon = showDisabledWarningIcon
+        self.onPlayPause = onPlayPause
+        self.trailingMenu = trailingMenu
+    }
     
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -29,13 +50,9 @@ struct TranscriptSegmentCard<TrailingMenu: View>: View {
                           : (Color(.label).opacity(0.15)))
                     .frame(width: 44, height: 44)
                     .overlay(
-                        Image(systemName: isDisabled ? "exclamationmark.triangle.fill" : (isPlaying ? "pause.fill" : "play.fill"))
+                        Image(systemName: iconName)
                             .font(.system(size: 20, weight: .bold))
-                            .foregroundColor(
-                                isDisabled
-                                ? .orange
-                                : (isActive ? (Color(.systemBackground)) : (.black))
-                            )
+                            .foregroundColor(iconColor)
                     )
             }
             .buttonStyle(.plain)
@@ -68,6 +85,20 @@ struct TranscriptSegmentCard<TrailingMenu: View>: View {
         )
         .background(.clear)
         .cornerRadius(AppTheme.cornerRadius)
+    }
+
+    private var iconName: String {
+        if isDisabled && showDisabledWarningIcon {
+            return "exclamationmark.triangle.fill"
+        }
+        return isPlaying ? "pause.fill" : "play.fill"
+    }
+
+    private var iconColor: Color {
+        if isDisabled && showDisabledWarningIcon {
+            return .orange
+        }
+        return isActive ? Color(.systemBackground) : .black
     }
 }
 

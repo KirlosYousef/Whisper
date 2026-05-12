@@ -90,6 +90,9 @@ struct RecordScreen: View {
     
     @ViewBuilder
     private var headerBanners: some View {
+        if let error = viewModel.errorMessage, !error.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            ErrorCapsuleView(text: error)
+        }
         if !viewModel.isOnline {
             BannerView(icon: "wifi.slash", title: "Offline Mode", subtitle: "Segments will be queued", color: .orange)
         }
@@ -121,35 +124,44 @@ struct RecordScreen: View {
                     }
 
                     if shouldShowSegmentRows(for: rec) {
-                        let segments = viewModel.segments(for: rec)
-                        ForEach(segments, id: \.id) { seg in
-                            TranscriptSegmentCard(
-                                isActive: playingSegmentId == seg.id,
-                                timeRange: timeRange(for: seg, in: segments, recordingDuration: rec.duration),
-                                text: seg.text.isEmpty ? statusText(for: seg) : seg.text,
-                                isPlaying: playingSegmentId == seg.id,
-                                isDisabled: viewModel.isRecording,
-                                onPlayPause: {
-                                    if playingSegmentId == seg.id {
-                                        PlaybackService.shared.stop()
-                                        playingSegmentId = nil
-                                    } else {
-                                        viewModel.play(segment: seg)
-                                        playingSegmentId = seg.id
-                                    }
-                                },
-                                trailingMenu: {
-                                    EmptyView()
-                                }
-                            )
-                            .card()
-                        }
+                        segmentsRows(for: rec)
                     }
                 }
                 // Keep bottom content visible above mic and translation chip
                 .padding(.bottom, docked ? 220 : 120)
             }
         }
+    }
+
+    private func segmentsRows(for recording: Recording) -> some View {
+        let segments = viewModel.segments(for: recording)
+        return ForEach(segments, id: \.id) { segment in
+            segmentCard(for: segment, in: segments, recordingDuration: recording.duration)
+        }
+    }
+
+    private func segmentCard(for segment: TranscriptionSegment, in allSegments: [TranscriptionSegment], recordingDuration: TimeInterval) -> some View {
+        TranscriptSegmentCard(
+            isActive: playingSegmentId == segment.id,
+            timeRange: timeRange(for: segment, in: allSegments, recordingDuration: recordingDuration),
+            text: segment.text.isEmpty ? statusText(for: segment) : segment.text,
+            isPlaying: playingSegmentId == segment.id,
+            isDisabled: viewModel.isRecording,
+            showDisabledWarningIcon: false,
+            onPlayPause: {
+                if playingSegmentId == segment.id {
+                    PlaybackService.shared.stop()
+                    playingSegmentId = nil
+                } else {
+                    viewModel.play(segment: segment)
+                    playingSegmentId = segment.id
+                }
+            },
+            trailingMenu: {
+                EmptyView()
+            }
+        )
+        .card()
     }
 
     private func shouldShowLiveTranscript(for recording: Recording) -> Bool {
@@ -207,8 +219,8 @@ struct RecordScreen: View {
     private var micArea: some View {
 		VStack {
 			HStack(spacing: 12) {
-				MicButton(isRecording: viewModel.isRecording, audioLevel: viewModel.audioLevel) {
-					if viewModel.isRecording {
+				MicButton(isRecording: viewModel.isRecording || viewModel.isStartingRecording, audioLevel: viewModel.audioLevel) {
+					if viewModel.isRecording || viewModel.isStartingRecording {
 						viewModel.stopRecording()
 					} else {
                         PlaybackService.shared.stop()
