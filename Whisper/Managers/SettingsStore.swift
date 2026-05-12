@@ -9,6 +9,11 @@ import Foundation
 import SwiftUI
 
 final class SettingsStore: ObservableObject {
+    // Code-only paywall gate:
+    // true  -> enforce paywall for non-premium users
+    // false -> disable paywall gating entirely (testing mode)
+    static let paywallEnabled = false
+
     @AppStorage("transcriptionLanguage") var transcriptionLanguage: String = "auto"
     @AppStorage("defaultTranslationLanguage") var defaultTranslationLanguage: String = "en"
     @AppStorage("transcriptionMode") var transcriptionModeRawValue: String = TranscriptionMode.segments20s.rawValue

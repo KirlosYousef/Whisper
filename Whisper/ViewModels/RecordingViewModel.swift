@@ -53,6 +53,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     @Published var isRealtimeConnected = false
     @Published var isRealtimeFallbackActive = false
     @Published var hidesSegmentRowsDuringRealtime = false
+    @Published private(set) var preRecordingTranscriptionModeOverride: TranscriptionMode? = nil
     // Track which recordings are currently generating summaries
     @Published private var summaryLoadingRecordingIds: Set<UUID> = []
     @Published var selectedLanguage: String = "auto" {
@@ -74,6 +75,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     private var realtimeItemTexts: [String: String] = [:]
     private var persistedRealtimeItemTexts: [String: String] = [:]
     private var realtimeDisconnectWorkItem: DispatchWorkItem?
+    private var inFlightSegmentTranscriptions: Set<UUID> = []
     private var cancellables = Set<AnyCancellable>()
     private let networkMonitor = NetworkMonitor.shared
     
@@ -112,6 +114,18 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         let allSegments = (try? modelContext.fetch(descriptor)) ?? []
         return allSegments.filter { $0.recording?.id == recording.id }
             .sorted { $0.timestamp < $1.timestamp }
+    }
+
+    var preRecordingTranscriptionMode: TranscriptionMode {
+        preRecordingTranscriptionModeOverride ?? settingsStore.transcriptionMode
+    }
+
+    func setPreRecordingTranscriptionMode(_ mode: TranscriptionMode) {
+        preRecordingTranscriptionModeOverride = mode
+    }
+
+    private func resetPreRecordingTranscriptionMode() {
+        preRecordingTranscriptionModeOverride = nil
     }
     
     func requestPermission() {
@@ -389,8 +403,9 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     func startRecording() {
         realtimeDisconnectWorkItem?.cancel()
         realtimeDisconnectWorkItem = nil
+        inFlightSegmentTranscriptions.removeAll()
 
-        let requestedMode = settingsStore.transcriptionMode
+        let requestedMode = preRecordingTranscriptionMode
         let canUseRealtime = requestedMode == .realtimeOpenAI && isOnline && realtimeTranscriptionService.isConfigured
         activeTranscriptionMode = canUseRealtime ? .realtimeOpenAI : .segments20s
         resetLiveTranscript()
@@ -456,6 +471,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
             DispatchQueue.main.async {
                 self.isRecording = false
                 self.isPaused = false
+                self.resetPreRecordingTranscriptionMode()
                 self.hidesSegmentRowsDuringRealtime = false
                 if self.activeTranscriptionMode == .realtimeOpenAI {
                     self.realtimeStatusText = "Finishing realtime transcript..."
@@ -471,6 +487,8 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                     }
                     self.realtimeDisconnectWorkItem = disconnectWork
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.2, execute: disconnectWork)
+                } else if let rec = self.activeRecording {
+                    self.ensurePendingSegmentsAreQueuedAfterStop(for: rec)
                 }
                 
                 if let rec = self.activeRecording {
@@ -600,6 +618,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
 
         // Check if we're online before attempting transcription
         if self.isOnline {
+            self.inFlightSegmentTranscriptions.insert(segment.id)
             AnalyticsService.shared.trackEvent("Transcription Started", properties: [
                 "segment_duration": duration,
                 "segment_start_time": startTime,
@@ -608,6 +627,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
             // Start transcription
             self.transcriptionService.transcribe(audioURL: url, segmentStart: startTime, duration: duration) { [weak self] text, error in
                 DispatchQueue.main.async {
+                    self?.inFlightSegmentTranscriptions.remove(segment.id)
                     if let error = error {
                         if let transcriptionError = error as? TranscriptionError, transcriptionError == .noNetwork {
                             segment.status = "queued"
@@ -722,12 +742,14 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
             for segment in queuedSegments {
                 if let _ = segment.recording {
                     let audioURL = URL(fileURLWithPath: segment.filePath)
+                    inFlightSegmentTranscriptions.insert(segment.id)
                     transcriptionService.transcribe(
                         audioURL: audioURL,
                         segmentStart: segment.timestamp,
                         duration: 30.0
                     ) { [weak self] text, error in
                         DispatchQueue.main.async {
+                            self?.inFlightSegmentTranscriptions.remove(segment.id)
                             if let error = error {
                                 segment.status = "failed"
                                 segment.text = ""
@@ -761,6 +783,23 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                 }
             }
         }
+    }
+
+    private func ensurePendingSegmentsAreQueuedAfterStop(for recording: Recording) {
+        let pending = segments(for: recording).filter {
+            $0.status == "processing" &&
+            $0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            !inFlightSegmentTranscriptions.contains($0.id)
+        }
+        guard !pending.isEmpty else { return }
+
+        for segment in pending {
+            segment.status = "queued"
+        }
+
+        try? modelContext.save()
+        fetchRecordings()
+        processQueuedTranscriptions()
     }
     
     func checkNetworkStatus() {

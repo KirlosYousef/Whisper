@@ -6,6 +6,7 @@ struct RecordScreen: View {
 	@Environment(\.colorScheme) private var colorScheme
     @ObservedObject var viewModel: RecordingViewModel
     @State private var docked = false
+    @State private var playingSegmentId: UUID? = nil
     
     var body: some View {
 		ZStack {
@@ -28,6 +29,8 @@ struct RecordScreen: View {
 				withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
 					docked = true
 				}
+                PlaybackService.shared.stop()
+                playingSegmentId = nil
 			}
 		}
 		.onAppear {
@@ -43,11 +46,44 @@ struct RecordScreen: View {
 		}
 		.overlay(alignment: .bottom) {
 			VStack(spacing: 12) {
-				TranslationChip(language: $viewModel.sessionTranslationLanguage) { newValue in
-					AnalyticsService.shared.trackEvent("Session Translation Language Changed", properties: [
-						"language": newValue
-					])
-				}
+                if !viewModel.isRecording {
+                    Menu {
+                        Picker("Transcription mode", selection: Binding(
+                            get: { viewModel.preRecordingTranscriptionMode },
+                            set: { newMode in
+                                viewModel.setPreRecordingTranscriptionMode(newMode)
+                                AnalyticsService.shared.trackEvent("Pre-recording Transcription Mode Selected", properties: [
+                                    "mode": newMode.rawValue
+                                ])
+                            }
+                        )) {
+                            ForEach(TranscriptionMode.allCases) { mode in
+                                Text(mode.settingsTitle).tag(mode)
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 8) {
+                            Text("Transcribe: \(viewModel.preRecordingTranscriptionMode.settingsTitle)")
+                                .font(.app(.medium, size: 15))
+                                .foregroundColor(colorScheme == .dark ? .white : .black)
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundColor(colorScheme == .dark ? .white : .black)
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .background((colorScheme == .dark ? Color.white : Color.black).opacity(0.08), in: Capsule())
+                        .overlay(Capsule().stroke((colorScheme == .dark ? Color.white : Color.black).opacity(0.15), lineWidth: 1))
+                    }
+                }
+
+                if !viewModel.isRecording {
+                    TranslationChip(language: $viewModel.sessionTranslationLanguage) { newValue in
+                        AnalyticsService.shared.trackEvent("Session Translation Language Changed", properties: [
+                            "language": newValue
+                        ])
+                    }
+                }
 			}
 			// Keep chip above the mic when docked
 			.padding(.bottom, docked ? 160 : 24)
@@ -87,10 +123,27 @@ struct RecordScreen: View {
                     }
 
                     if shouldShowSegmentRows(for: rec) {
-                        ForEach(viewModel.segments(for: rec), id: \.id) { seg in
-                            SegmentRow(segment: seg) {
-                                viewModel.play(segment: seg)
-                            }
+                        let segments = viewModel.segments(for: rec)
+                        ForEach(segments, id: \.id) { seg in
+                            TranscriptSegmentCard(
+                                isActive: playingSegmentId == seg.id,
+                                timeRange: timeRange(for: seg, in: segments, recordingDuration: rec.duration),
+                                text: seg.text.isEmpty ? statusText(for: seg) : seg.text,
+                                isPlaying: playingSegmentId == seg.id,
+                                isDisabled: viewModel.isRecording,
+                                onPlayPause: {
+                                    if playingSegmentId == seg.id {
+                                        PlaybackService.shared.stop()
+                                        playingSegmentId = nil
+                                    } else {
+                                        viewModel.play(segment: seg)
+                                        playingSegmentId = seg.id
+                                    }
+                                },
+                                trailingMenu: {
+                                    EmptyView()
+                                }
+                            )
                             .card()
                         }
                     }
@@ -118,6 +171,39 @@ struct RecordScreen: View {
             !viewModel.transcriptWords(for: recording).isEmpty
 
         return !viewModel.hidesSegmentRowsDuringRealtime && !hasFullTranscript
+    }
+
+    private func timeRange(for segment: TranscriptionSegment, in all: [TranscriptionSegment], recordingDuration: TimeInterval) -> String {
+        guard let idx = all.firstIndex(where: { $0.id == segment.id }) else {
+            return singleTime(segment.timestamp)
+        }
+
+        let start = segment.timestamp
+        let end: TimeInterval
+        if all.count == 1 {
+            end = max(recordingDuration, start)
+        } else if idx + 1 < all.count {
+            end = max(all[idx + 1].timestamp, start)
+        } else {
+            end = max(recordingDuration, start)
+        }
+
+        return "\(singleTime(start)) - \(singleTime(end))"
+    }
+
+    private func singleTime(_ t: TimeInterval) -> String {
+        let mins = Int(t) / 60
+        let secs = Int(t) % 60
+        return String(format: "%01d:%02d", mins, secs)
+    }
+
+    private func statusText(for segment: TranscriptionSegment) -> String {
+        switch segment.status {
+        case "pending", "processing": return "Processing…"
+        case "failed": return "Failed to transcribe"
+        case "queued": return "Queued (offline)"
+        default: return ""
+        }
     }
     
     private var micArea: some View {

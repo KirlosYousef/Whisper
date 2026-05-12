@@ -96,11 +96,13 @@ struct WhisperApp: App {
                         }
                     }
                     
-                    if !paywallManager.isPremium {
+                    let shouldShowPaywall = SettingsStore.paywallEnabled && !paywallManager.isPremium
+                    if shouldShowPaywall {
                         PayWallView()
                             .onAppear {
                                 AnalyticsService.shared.trackEvent("Paywall Shown", properties: [
-                                    "source": "main_app"
+                                    "source": "main_app",
+                                    "paywall_enabled": SettingsStore.paywallEnabled
                                 ])
                             }
                     }
