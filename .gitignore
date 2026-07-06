@@ -44,6 +44,7 @@ Package.resolved
 Config.plist
 Secrets.plist
 APIKeys.plist
+Secrets.xcconfig
 
 # Logs
 *.log

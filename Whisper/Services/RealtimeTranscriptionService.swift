@@ -12,7 +12,7 @@ enum RealtimeTranscriptionEvent {
 final class RealtimeTranscriptionService {
     private enum RealtimeTuning {
         static let useServerVAD = false
-        static let transcriptionDelay: String? = nil
+        static let transcriptionDelay: String? = "xhigh"
         static let noiseReductionType = "near_field"
         static let vadThreshold = 0.62
         static let vadPrefixPaddingMs = 420

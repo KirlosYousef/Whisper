@@ -188,7 +188,7 @@ class AudioService: NSObject {
         }
         
         do {
-            try recordingSession.setCategory(.playAndRecord, mode: .default)
+            try recordingSession.setCategory(.playAndRecord, mode: .measurement)
             try recordingSession.setActive(true)
             
             audioEngine = AVAudioEngine()
