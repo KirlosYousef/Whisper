@@ -54,7 +54,6 @@ struct OnboardingCoordinatorView: View {
                         isValid: viewModel.canSubmitName,
                         onSubmit: {
                             viewModel.completeOnboarding()
-                            guard SettingsStore.paywallEnabled else { return }
                             // Show paywall after a brief delay
                             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                                 showPaywall = true
@@ -75,7 +74,7 @@ struct OnboardingCoordinatorView: View {
             .animation(.spring(response: 0.4, dampingFraction: 0.8), value: viewModel.currentQuestionIndex)
             
             // Paywall overlay
-            if SettingsStore.paywallEnabled && showPaywall {
+            if showPaywall {
                 PayWallView(displayCloseButton: false)
                     .transition(.opacity)
                     .zIndex(1)

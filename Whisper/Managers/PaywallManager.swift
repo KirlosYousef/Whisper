@@ -12,20 +12,31 @@ class PaywallManager: NSObject, ObservableObject {
     static var shared = PaywallManager()
     
     @Published var isPremium: Bool = false
+    private var didSetup = false
     
     override init() {
         super.init()
-        setup()
     }
     
     func setup() {
+        guard !didSetup else { return }
+        didSetup = true
+        // #region agent log
+        DebugSessionLog.write(hypothesisId: "H6", location: "PaywallManager.swift:setup", message: "PaywallManager setup start", data: [:])
+        // #endregion
         // Purchases.logLevel = .debug
         guard let apiKey = loadRevenueCatAPIKey() else {
+            // #region agent log
+            DebugSessionLog.write(hypothesisId: "H6", location: "PaywallManager.swift:setup", message: "RevenueCat API key missing", data: [:])
+            // #endregion
             assertionFailure("RevenueCat API key is missing. Set REVENUECAT_API_KEY env var or add it to Config.plist or Info.plist")
             return
         }
         Purchases.configure(withAPIKey: apiKey)
         Purchases.shared.delegate = self
+        // #region agent log
+        DebugSessionLog.write(hypothesisId: "H6", location: "PaywallManager.swift:setup", message: "RevenueCat configured", data: [:])
+        // #endregion
         
         Task {
             _ = await isPremiumMember()

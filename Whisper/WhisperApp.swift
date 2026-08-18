@@ -16,6 +16,26 @@ struct WhisperApp: App {
     @State private var selectedTab: Int = 0
     @StateObject private var viewModel: RecordingViewModel
     @StateObject private var settingsStore = SettingsStore()
+    @State private var didFinishLaunch = false
+
+    /// Debug-only: skip onboarding and the blocking paywall so the main app can be tested.
+    /// Release builds always show both.
+    private var bypassOnboardingAndPaywall: Bool {
+        #if DEBUG
+        true
+        #else
+        false
+        #endif
+    }
+
+    private var shouldShowMainApp: Bool {
+        bypassOnboardingAndPaywall || settingsStore.hasCompletedOnboarding
+    }
+
+    private var shouldShowForcedPaywall: Bool {
+        guard !bypassOnboardingAndPaywall else { return false }
+        return didFinishLaunch && !paywallManager.isPremium
+    }
     
     static let sharedModelContainer: ModelContainer = {
         let schema = Schema([
@@ -24,29 +44,32 @@ struct WhisperApp: App {
         ])
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
         do {
-            return try ModelContainer(for: schema, configurations: [modelConfiguration])
+            let container = try ModelContainer(for: schema, configurations: [modelConfiguration])
+            // #region agent log
+            DebugSessionLog.write(hypothesisId: "H7", location: "WhisperApp.swift:sharedModelContainer", message: "ModelContainer created", data: [:])
+            // #endregion
+            return container
         } catch {
             fatalError("Could not create ModelContainer: \(error)")
         }
     }()
 
     init() {
-        // Initialize the shared RecordingViewModel once for the lifetime of the app
+        // #region agent log
+        DebugSessionLog.write(hypothesisId: "H8", location: "WhisperApp.swift:init", message: "App init start", data: [:])
+        // #endregion
         _viewModel = StateObject(wrappedValue: RecordingViewModel(modelContext: WhisperApp.sharedModelContainer.mainContext))
-        
-        // Initialize Mixpanel through the manager instead of directly
-        AnalyticsService.shared.initialize()
-        
-        // Track app launch
-        AnalyticsService.shared.trackEvent("App Launched", properties: [
-            "has_completed_onboarding": SettingsStore().hasCompletedOnboarding
+        // #region agent log
+        DebugSessionLog.write(hypothesisId: "H8", location: "WhisperApp.swift:init", message: "App init finished viewModel", data: [
+            "hasCompletedOnboarding": SettingsStore().hasCompletedOnboarding
         ])
+        // #endregion
     }
 
     var body: some Scene {
         WindowGroup {
             ZStack {
-                if settingsStore.hasCompletedOnboarding {
+                if shouldShowMainApp {
                     // Main app
                     TabView(selection: $selectedTab) {
                         NavigationStack {
@@ -96,13 +119,11 @@ struct WhisperApp: App {
                         }
                     }
                     
-                    let shouldShowPaywall = SettingsStore.paywallEnabled && !paywallManager.isPremium
-                    if shouldShowPaywall {
+                    if shouldShowForcedPaywall {
                         PayWallView()
                             .onAppear {
                                 AnalyticsService.shared.trackEvent("Paywall Shown", properties: [
-                                    "source": "main_app",
-                                    "paywall_enabled": SettingsStore.paywallEnabled
+                                    "source": "main_app"
                                 ])
                             }
                     }
@@ -114,6 +135,20 @@ struct WhisperApp: App {
                             HapticsManager.shared.prepare()
                         }
                 }
+            }
+            .onAppear {
+                PaywallManager.shared.setup()
+                AnalyticsService.shared.initialize()
+                AnalyticsService.shared.trackEvent("App Launched", properties: [
+                    "has_completed_onboarding": settingsStore.hasCompletedOnboarding
+                ])
+                didFinishLaunch = true
+                // #region agent log
+                DebugSessionLog.write(hypothesisId: "H9", location: "WhisperApp.swift:body", message: "Root UI appeared", data: [
+                    "hasCompletedOnboarding": settingsStore.hasCompletedOnboarding,
+                    "isPremium": paywallManager.isPremium
+                ])
+                // #endregion
             }
         }
         .modelContainer(WhisperApp.sharedModelContainer)

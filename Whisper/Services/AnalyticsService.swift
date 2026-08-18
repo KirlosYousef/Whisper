@@ -70,3 +70,41 @@ final class AnalyticsService {
         Mixpanel.mainInstance().reset()
     }
 }
+
+// #region agent log
+enum DebugSessionLog {
+    static func write(hypothesisId: String, location: String, message: String, data: [String: Any] = [:]) {
+        let payload: [String: Any] = [
+            "sessionId": "31fa07",
+            "runId": "post-fix",
+            "hypothesisId": hypothesisId,
+            "location": location,
+            "message": message,
+            "data": data,
+            "timestamp": Int(Date().timeIntervalSince1970 * 1000)
+        ]
+        DispatchQueue.global(qos: .utility).async {
+            guard JSONSerialization.isValidJSONObject(payload),
+                  let json = try? JSONSerialization.data(withJSONObject: payload),
+                  let line = String(data: json, encoding: .utf8) else { return }
+            let dataLine = Data((line + "\n").utf8)
+            let path = "/Users/kirlosyousef/Developer/Whisper/.cursor/debug-31fa07.log"
+            if !FileManager.default.fileExists(atPath: path) {
+                FileManager.default.createFile(atPath: path, contents: nil, attributes: nil)
+            }
+            if let handle = FileHandle(forWritingAtPath: path) {
+                _ = try? handle.seekToEnd()
+                try? handle.write(contentsOf: dataLine)
+                try? handle.close()
+            }
+            var request = URLRequest(url: URL(string: "http://127.0.0.1:7427/ingest/72658f9a-0ae3-4ccd-8e18-2716ecbaf0b4")!)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue("31fa07", forHTTPHeaderField: "X-Debug-Session-Id")
+            request.timeoutInterval = 2
+            request.httpBody = json
+            URLSession.shared.dataTask(with: request).resume()
+        }
+    }
+}
+// #endregion

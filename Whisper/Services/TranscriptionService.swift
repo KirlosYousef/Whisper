@@ -12,10 +12,9 @@ class TranscriptionService {
     private let apiKey: String
     private let endpoint = URL(string: "https://api.openai.com/v1/audio/transcriptions")!
     private let maxRetries = 5
-    private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
     
-    // Optional language for transcription (nil = auto-detect)
-    var preferredLanguage: String? = nil
+    // Optional languages for transcription (empty = auto-detect with device hints)
+    var preferredLanguages: [String] = []
     
     init() {
         // Load API key from Config.plist
@@ -70,26 +69,47 @@ class TranscriptionService {
         transcribeWithRetry(audioURL: audioURL, retryCount: 0, completion: completion)
     }
     
-    private func transcribeWithRetry(audioURL: URL, retryCount: Int, completion: @escaping (String?, Error?) -> Void) {
-        transcribeWithOpenAI(audioURL: audioURL) { [weak self] text, error in
-            if let _ = error, retryCount < self?.maxRetries ?? 0 {
-                // Exponential backoff with jitter: wait 2^retryCount + random(0,0.5)s
-                let base = TimeInterval(pow(2.0, Double(retryCount)))
-                let jitter = Double.random(in: 0...0.5)
-                let delay = min(30.0, base + jitter)
-                DispatchQueue.global().asyncAfter(deadline: .now() + delay) {
-                    self?.transcribeWithRetry(audioURL: audioURL, retryCount: retryCount + 1, completion: completion)
+    private func transcribeWithRetry(audioURL: URL, retryCount: Int, model: String = OpenAIConfiguration.fileTranscriptionModel, completion: @escaping (String?, Error?) -> Void) {
+        transcribeWithOpenAI(audioURL: audioURL, model: model) { [weak self] text, error in
+            guard let self else { return }
+
+            if let error {
+                if self.isRetryable(error), retryCount < self.maxRetries {
+                    let base = TimeInterval(pow(2.0, Double(retryCount)))
+                    let jitter = Double.random(in: 0...0.5)
+                    let delay = min(30.0, base + jitter)
+                    DispatchQueue.global().asyncAfter(deadline: .now() + delay) {
+                        self.transcribeWithRetry(audioURL: audioURL, retryCount: retryCount + 1, model: model, completion: completion)
+                    }
+                    return
                 }
-            } else if let _ = error {
-                // Max retries reached, try fallback
-                self?.transcribeWithFallback(audioURL: audioURL, completion: completion)
-            } else {
-                completion(text, nil)
+
+                if model == OpenAIConfiguration.fileTranscriptionModel {
+                    self.transcribeWithRetry(
+                        audioURL: audioURL,
+                        retryCount: 0,
+                        model: OpenAIConfiguration.fileTranscriptionFallbackModel,
+                        completion: completion
+                    )
+                    return
+                }
+
+                completion(nil, error)
+                return
             }
+
+            completion(text, nil)
         }
     }
+
+    private func isRetryable(_ error: Error) -> Bool {
+        if let transcriptionError = error as? TranscriptionError {
+            return transcriptionError == .rateLimited || transcriptionError == .serverError
+        }
+        return false
+    }
     
-    private func transcribeWithOpenAI(audioURL: URL, completion: @escaping (String?, Error?) -> Void) {
+    private func transcribeWithOpenAI(audioURL: URL, model: String, completion: @escaping (String?, Error?) -> Void) {
         // Check if API key is properly configured
         guard apiKey != OpenAIConfiguration.placeholderAPIKey && !apiKey.isEmpty else {
             completion(nil, TranscriptionError.apiKeyNotConfigured)
@@ -116,17 +136,22 @@ class TranscriptionService {
         // model
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
         body.append("Content-Disposition: form-data; name=\"model\"\r\n\r\n".data(using: .utf8)!)
-        body.append("gpt-4o-mini-transcribe\r\n".data(using: .utf8)!)
-        // Add language parameter if specified (otherwise auto-detect)
-        if let language = preferredLanguage, !language.isEmpty {
+        body.append("\(model)\r\n".data(using: .utf8)!)
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"prompt\"\r\n\r\n".data(using: .utf8)!)
+        body.append("\(OpenAIConfiguration.transcriptionPrompt)\r\n".data(using: .utf8)!)
+        let languageHints = preferredLanguages.filter { !$0.isEmpty && $0.lowercased() != "auto" }
+        if model == OpenAIConfiguration.fileTranscriptionModel {
+            for language in languageHints {
+                body.append("--\(boundary)\r\n".data(using: .utf8)!)
+                body.append("Content-Disposition: form-data; name=\"languages[]\"\r\n\r\n".data(using: .utf8)!)
+                body.append("\(language)\r\n".data(using: .utf8)!)
+            }
+        } else if let language = languageHints.first {
             body.append("--\(boundary)\r\n".data(using: .utf8)!)
             body.append("Content-Disposition: form-data; name=\"language\"\r\n\r\n".data(using: .utf8)!)
             body.append("\(language)\r\n".data(using: .utf8)!)
         }
-        // response_format
-        body.append("--\(boundary)\r\n".data(using: .utf8)!)
-        body.append("Content-Disposition: form-data; name=\"response_format\"\r\n\r\n".data(using: .utf8)!)
-        body.append("text\r\n".data(using: .utf8)!)
         // end
         body.append("--\(boundary)--\r\n".data(using: .utf8)!)
 
@@ -160,35 +185,25 @@ class TranscriptionService {
                 }
             }
             
-            guard let data = data, let text = String(data: data, encoding: .utf8) else {
+            guard let data = data else {
                 completion(nil, TranscriptionError.invalidResponse)
                 return
             }
-            
+
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let text = json["text"] as? String {
+                completion(text, nil)
+                return
+            }
+
+            guard let text = String(data: data, encoding: .utf8) else {
+                completion(nil, TranscriptionError.invalidResponse)
+                return
+            }
+
             completion(text, nil)
         }
         task.resume()
-    }
-    
-    private func transcribeWithFallback(audioURL: URL, completion: @escaping (String?, Error?) -> Void) {
-        guard let speechRecognizer = speechRecognizer, speechRecognizer.isAvailable else {
-            completion(nil, TranscriptionError.fallbackUnavailable)
-            return
-        }
-        
-        let request = SFSpeechURLRecognitionRequest(url: audioURL)
-        request.shouldReportPartialResults = false
-        
-        speechRecognizer.recognitionTask(with: request) { result, error in
-            if let error = error {
-                completion(nil, error)
-                return
-            }
-            
-            if let result = result, result.isFinal {
-                completion(result.bestTranscription.formattedString, nil)
-            }
-        }
     }
 }
 

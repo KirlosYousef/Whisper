@@ -45,6 +45,32 @@ public enum Languages {
 		return supported.first(where: { $0.code.lowercased() == code.lowercased() })?.name
 			?? code.uppercased()
 	}
+
+	public static func isoCode(from localeIdentifier: String) -> String {
+		let lowered = localeIdentifier.lowercased()
+		if lowered.hasPrefix("zh") { return "zh" }
+		return String(lowered.prefix(2))
+	}
+
+	public static func preferredCodes(limit: Int = 3) -> [String] {
+		let supportedCodes = Set(supported.map(\.code))
+		var result: [String] = []
+		for identifier in Locale.preferredLanguages {
+			let code = isoCode(from: identifier)
+			guard supportedCodes.contains(code), !result.contains(code) else { continue }
+			result.append(code)
+			if result.count >= limit { break }
+		}
+		return result
+	}
+
+	public static func transcriptionHints(from stored: String) -> [String] {
+		let trimmed = stored.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+		if trimmed.isEmpty || trimmed == autoCode {
+			return preferredCodes()
+		}
+		return [trimmed]
+	}
 }
 
 

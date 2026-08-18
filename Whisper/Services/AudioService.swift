@@ -30,12 +30,18 @@ class AudioService: NSObject {
     private var segmentIndex: Int = 0
     private var segmentStartTime: TimeInterval = 0
     private var audioFile: AVAudioFile?
+    private let realtimeOutputFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 24000, channels: 1, interleaved: true)
     private var realtimeConverter: AVAudioConverter?
     private var realtimeInputFormat: AVAudioFormat?
-    private let realtimeOutputFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 24000, channels: 1, interleaved: true)
+    private var fileConverter: AVAudioConverter?
+    private var fileConverterInputFormat: AVAudioFormat?
+    private var lastAudioLevelPublishTime: CFAbsoluteTime = 0
     private var isRecording = false
     private var isPaused = false
     private var wasInterrupted = false
+    private var isTapInstalled = false
+    private var shouldSplitIntoSegments = true
+    private var sessionStartTime: Date?
     weak var delegate: AudioServiceDelegate?
     
     override init() {
@@ -165,15 +171,17 @@ class AudioService: NSObject {
         }
     }
     
-    func startRecording(completion: @escaping (Bool, String?) -> Void) {
+    func startRecording(splitIntoSegments: Bool = true, completion: @escaping (Bool, String?) -> Void) {
         // Check available disk space before starting
         if !hasSufficientDiskSpace() {
             completion(false, "Insufficient disk space. Please free up some space and try again.")
             return
         }
         
+        shouldSplitIntoSegments = splitIntoSegments
         segmentIndex = 0
         segmentStartTime = 0
+        sessionStartTime = nil
         startNewSegment(completion: completion)
     }
 
@@ -188,19 +196,29 @@ class AudioService: NSObject {
         }
         
         do {
-            try recordingSession.setCategory(.playAndRecord, mode: .measurement)
-            try recordingSession.setActive(true)
-            
-            audioEngine = AVAudioEngine()
-            inputNode = audioEngine?.inputNode
-            
-            guard let audioEngine = audioEngine, let inputNode = inputNode else {
-                completion?(false, nil)
+            teardownEngine()
+
+            try recordingSession.setCategory(.playAndRecord, mode: .measurement, options: [])
+            try recordingSession.setActive(true, options: [])
+
+            let engine = AVAudioEngine()
+            audioEngine = engine
+            // #region agent log
+            DebugSessionLog.write(hypothesisId: "H1", location: "AudioService.swift:startNewSegment", message: "Audio session active, accessing inputNode", data: [
+                "category": recordingSession.category.rawValue,
+                "mode": recordingSession.mode.rawValue,
+                "sampleRate": recordingSession.sampleRate
+            ])
+            // #endregion
+            let node = engine.inputNode
+            inputNode = node
+
+            let inputFormat = node.outputFormat(forBus: 0)
+            guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
+                teardownEngine()
+                completion?(false, "Microphone is not available.")
                 return
             }
-            
-            // Use the input node's native format for recording
-            let inputFormat = inputNode.outputFormat(forBus: 0)
             
             // Use optimized settings for smaller WAV files
             // 16kHz mono is sufficient for speech and reduces file size
@@ -215,99 +233,78 @@ class AudioService: NSObject {
             
             audioFile = try AVAudioFile(forWriting: wavURL, settings: recordingSettings)
 
-            // Install tap using the input node's format
-            inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
+            node.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, _ in
                 self?.processAudioBuffer(buffer)
             }
-            
-            // Start the engine
-            try audioEngine.start()
+            isTapInstalled = true
+
+            engine.prepare()
+            try engine.start()
             
             currentFilePath = wavURL.path
+            lastAudioLevelPublishTime = 0
+            if sessionStartTime == nil {
+                sessionStartTime = Date()
+            }
             recordingStartTime = Date()
             isRecording = true
             
-            // Start or restart timer - reduced to 20s for faster transcription feedback
-            // This provides better UX with shorter wait times while maintaining good transcription quality
-            segmentTimer?.invalidate()
-            segmentTimer = Timer.scheduledTimer(withTimeInterval: 20.0, repeats: false) { [weak self] _ in
-                self?.finishCurrentSegmentAndStartNew()
+            if shouldSplitIntoSegments {
+                segmentTimer?.invalidate()
+                segmentTimer = Timer.scheduledTimer(withTimeInterval: 20.0, repeats: false) { [weak self] _ in
+                    self?.finishCurrentSegmentAndStartNew()
+                }
             }
             
             completion?(true, currentFilePath)
         } catch {
+            teardownEngine()
             completion?(false, nil)
         }
     }
     
     private func processAudioBuffer(_ buffer: AVAudioPCMBuffer) {
         guard isRecording else { return }
-        
-        // Calculate audio level
-        let channelData = buffer.floatChannelData?[0]
-        let frameLength = Int(buffer.frameLength)
-        
-        var sum: Float = 0.0
-        for i in 0..<frameLength {
-            let sample = channelData?[i] ?? 0.0
-            sum += sample * sample
-        }
-        
-        let rms = sqrt(sum / Float(frameLength))
-        let db = 20 * log10(rms)
-        
-        // Normalize to 0-1 range (typical speech is around -30 to -10 dB)
-        let normalizedLevel = max(0.0, min(1.0, (db + 60) / 50))
-        
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            self.delegate?.audioService(self, didUpdateAudioLevel: normalizedLevel)
+
+        let now = CFAbsoluteTimeGetCurrent()
+        if now - lastAudioLevelPublishTime >= 0.07 {
+            lastAudioLevelPublishTime = now
+            let channelData = buffer.floatChannelData?[0]
+            let frameLength = Int(buffer.frameLength)
+            var sum: Float = 0.0
+            if let channelData, frameLength > 0 {
+                for i in 0..<frameLength {
+                    let sample = channelData[i]
+                    sum += sample * sample
+                }
+            }
+            let rms = sqrt(sum / Float(max(frameLength, 1)))
+            let db = 20 * log10(max(rms, 0.000_001))
+            let normalizedLevel = max(0.0, min(1.0, (db + 60) / 50))
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.delegate?.audioService(self, didUpdateAudioLevel: normalizedLevel)
+            }
         }
 
         if let realtimeData = convertToRealtimePCM(buffer) {
             delegate?.audioService(self, didReceiveRealtimeAudio: realtimeData)
         }
-        
-        // Convert and write to file if format conversion is needed
-        guard let audioFile = audioFile else { return }
-        
-        let inputFormat = buffer.format
-        let outputFormat = audioFile.processingFormat
-        
-        // If formats match, write directly
-        if inputFormat == outputFormat {
-            try? audioFile.write(from: buffer)
-            return
-        }
-        
-        // Otherwise, convert the format (e.g., 48kHz stereo → 16kHz mono)
-        guard let converter = AVAudioConverter(from: inputFormat, to: outputFormat) else {
-            // If conversion fails, try writing directly (AVAudioFile may handle it)
-            try? audioFile.write(from: buffer)
-            return
-        }
-        
-        // Calculate output buffer size
-        let capacity = AVAudioFrameCount(Double(buffer.frameLength) * outputFormat.sampleRate / inputFormat.sampleRate)
-        guard let convertedBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: capacity) else {
-            return
-        }
-        
-        var error: NSError?
-        let inputBlock: AVAudioConverterInputBlock = { _, outStatus in
-            outStatus.pointee = .haveData
-            return buffer
-        }
-        
-        converter.convert(to: convertedBuffer, error: &error, withInputFrom: inputBlock)
-        
-        if error == nil {
-            try? audioFile.write(from: convertedBuffer)
-        }
+
+        guard let audioFile else { return }
+        writeToFile(buffer, audioFile: audioFile)
     }
 
     private func finishCurrentSegmentAndStartNew() {
         guard isRecording else { return }
+
+        // #region agent log
+        DebugSessionLog.write(hypothesisId: "H1", location: "AudioService.swift:finishCurrentSegmentAndStartNew", message: "20s engine rollover starting", data: [
+            "segmentIndex": segmentIndex,
+            "segmentStartTime": segmentStartTime,
+            "willStopEngine": true
+        ])
+        // #endregion
         
         stopCurrentSegment()
         let fileURL = URL(fileURLWithPath: currentFilePath ?? "")
@@ -323,16 +320,34 @@ class AudioService: NSObject {
     
     private func stopCurrentSegment() {
         isRecording = false
-        inputNode?.removeTap(onBus: 0)
+        removeTapIfNeeded()
         audioEngine?.stop()
+        audioFile = nil
+    }
+
+    private func removeTapIfNeeded() {
+        guard isTapInstalled else { return }
+        inputNode?.removeTap(onBus: 0)
+        isTapInstalled = false
+    }
+
+    private func teardownEngine() {
+        isRecording = false
+        removeTapIfNeeded()
+        audioEngine?.stop()
+        audioEngine?.reset()
+        audioEngine = nil
+        inputNode = nil
         audioFile = nil
         realtimeConverter = nil
         realtimeInputFormat = nil
+        fileConverter = nil
+        fileConverterInputFormat = nil
     }
     
     func pauseRecording() {
         isRecording = false
-        inputNode?.removeTap(onBus: 0)
+        removeTapIfNeeded()
         audioEngine?.pause()
         isPaused = true
     }
@@ -352,19 +367,22 @@ class AudioService: NSObject {
             }
             guard let audioEngine = audioEngine, let inputNode = inputNode else { return }
             
-            // Reinstall input tap to continue writing to the current audioFile
             let inputFormat = inputNode.outputFormat(forBus: 0)
-            inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
+            guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else { return }
+            removeTapIfNeeded()
+            inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, _ in
                 self?.processAudioBuffer(buffer)
             }
+            isTapInstalled = true
             
             audioEngine.prepare()
             try audioEngine.start()
             
-            // Re-arm segmentation timer to continue splitting after resume
-            segmentTimer?.invalidate()
-            segmentTimer = Timer.scheduledTimer(withTimeInterval: 20.0, repeats: false) { [weak self] _ in
-                self?.finishCurrentSegmentAndStartNew()
+            if shouldSplitIntoSegments {
+                segmentTimer?.invalidate()
+                segmentTimer = Timer.scheduledTimer(withTimeInterval: 20.0, repeats: false) { [weak self] _ in
+                    self?.finishCurrentSegmentAndStartNew()
+                }
             }
             
             isRecording = true
@@ -377,40 +395,102 @@ class AudioService: NSObject {
     func stopRecording(completion: @escaping (TimeInterval?, String?) -> Void) {
         segmentTimer?.invalidate()
         segmentTimer = nil
+        let sessionDuration = currentSessionDuration()
         
         if isRecording {
             stopCurrentSegment()
             let fileURL = URL(fileURLWithPath: currentFilePath ?? "")
-            let duration = Date().timeIntervalSince(recordingStartTime ?? Date())
-            let startTime = segmentStartTime
-            delegate?.audioService(self, didFinishSegment: fileURL, duration: duration, startTime: startTime)
-            completion(duration, fileURL.path)
-        } else if let start = recordingStartTime, let filePath = currentFilePath {
-            let duration = Date().timeIntervalSince(start)
-            completion(duration, filePath)
+            let chunkDuration = Date().timeIntervalSince(recordingStartTime ?? Date())
+            let reportedDuration = shouldSplitIntoSegments ? chunkDuration : sessionDuration
+            let startTime = shouldSplitIntoSegments ? segmentStartTime : 0
+            delegate?.audioService(self, didFinishSegment: fileURL, duration: reportedDuration, startTime: startTime)
+            completion(sessionDuration, fileURL.path)
+        } else if sessionStartTime != nil || recordingStartTime != nil {
+            completion(sessionDuration, currentFilePath)
         } else {
             completion(nil, nil)
         }
         
         audioEngine = nil
         inputNode = nil
+        realtimeConverter = nil
+        realtimeInputFormat = nil
+        fileConverter = nil
+        fileConverterInputFormat = nil
         currentFilePath = nil
         recordingStartTime = nil
+        sessionStartTime = nil
         isRecording = false
+    }
+
+    private func currentSessionDuration() -> TimeInterval {
+        Date().timeIntervalSince(sessionStartTime ?? recordingStartTime ?? Date())
+    }
+
+    private func writeToFile(_ buffer: AVAudioPCMBuffer, audioFile: AVAudioFile) {
+        let inputFormat = buffer.format
+        let outputFormat = audioFile.processingFormat
+
+        if inputFormat == outputFormat {
+            try? audioFile.write(from: buffer)
+            return
+        }
+
+        if fileConverter == nil || fileConverterInputFormat?.isEqual(inputFormat) != true {
+            fileConverterInputFormat = inputFormat
+            fileConverter = AVAudioConverter(from: inputFormat, to: outputFormat)
+        }
+
+        guard let converter = fileConverter else {
+            try? audioFile.write(from: buffer)
+            return
+        }
+
+        guard let convertedBuffer = convert(buffer, with: converter, outputFormat: outputFormat) else { return }
+        try? audioFile.write(from: convertedBuffer)
     }
 
     private func convertToRealtimePCM(_ buffer: AVAudioPCMBuffer) -> Data? {
         guard let outputFormat = realtimeOutputFormat else { return nil }
+        if let data = pcmData(from: buffer, outputFormat: outputFormat) {
+            return data
+        }
 
+        realtimeConverter = nil
+        realtimeInputFormat = nil
+        // #region agent log
+        DebugSessionLog.write(hypothesisId: "H3", location: "AudioService.swift:convertToRealtimePCM", message: "PCM convert failed, resetting converter", data: [
+            "inputSampleRate": buffer.format.sampleRate,
+            "frameLength": buffer.frameLength
+        ])
+        // #endregion
+        return pcmData(from: buffer, outputFormat: outputFormat)
+    }
+
+    private func pcmData(from buffer: AVAudioPCMBuffer, outputFormat: AVAudioFormat) -> Data? {
         if realtimeConverter == nil || realtimeInputFormat?.isEqual(buffer.format) != true {
             realtimeInputFormat = buffer.format
             realtimeConverter = AVAudioConverter(from: buffer.format, to: outputFormat)
         }
 
-        guard let converter = realtimeConverter else { return nil }
+        guard let converter = realtimeConverter,
+              let convertedBuffer = convert(buffer, with: converter, outputFormat: outputFormat) else {
+            return nil
+        }
 
+        let bytesPerFrame = Int(convertedBuffer.format.streamDescription.pointee.mBytesPerFrame)
+        let byteCount = Int(convertedBuffer.frameLength) * bytesPerFrame
+        guard byteCount > 0,
+              let bytes = convertedBuffer.audioBufferList.pointee.mBuffers.mData else {
+            return nil
+        }
+
+        return Data(bytes: bytes, count: min(Int(convertedBuffer.audioBufferList.pointee.mBuffers.mDataByteSize), byteCount))
+    }
+
+    private func convert(_ buffer: AVAudioPCMBuffer, with converter: AVAudioConverter, outputFormat: AVAudioFormat) -> AVAudioPCMBuffer? {
         let ratio = outputFormat.sampleRate / buffer.format.sampleRate
-        let capacity = max(1, AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 1)
+        let capacity = max(1, AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 32)
         guard let convertedBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: capacity) else {
             return nil
         }
@@ -421,7 +501,6 @@ class AudioService: NSObject {
                 outStatus.pointee = .noDataNow
                 return nil
             }
-
             didProvideInput = true
             outStatus.pointee = .haveData
             return buffer
@@ -430,18 +509,6 @@ class AudioService: NSObject {
         var error: NSError?
         converter.convert(to: convertedBuffer, error: &error, withInputFrom: inputBlock)
         guard error == nil, convertedBuffer.frameLength > 0 else { return nil }
-
-        let byteCount = Int(convertedBuffer.frameLength) * MemoryLayout<Int16>.size
-        if let channelData = convertedBuffer.int16ChannelData?[0] {
-            return Data(bytes: channelData, count: byteCount)
-        }
-
-        guard let bytes = convertedBuffer.audioBufferList.pointee.mBuffers.mData else {
-            return nil
-        }
-
-        return Data(bytes: bytes, count: byteCount)
+        return convertedBuffer
     }
-    
-
 }

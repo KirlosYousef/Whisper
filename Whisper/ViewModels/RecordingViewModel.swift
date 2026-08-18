@@ -59,8 +59,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     @Published private var summaryLoadingRecordingIds: Set<UUID> = []
     @Published var selectedLanguage: String = "auto" {
         didSet {
-            // Update transcription service language preference
-            transcriptionService.preferredLanguage = selectedLanguage == "auto" ? nil : selectedLanguage
+            transcriptionService.preferredLanguages = Languages.transcriptionHints(from: selectedLanguage)
         }
     }
     // Session-scoped translation language shared across tabs (resets on app relaunch)
@@ -74,8 +73,10 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     private var activeTranscriptionMode: TranscriptionMode = .segments20s
     private var realtimeItemOrder: [String] = []
     private var realtimeItemTexts: [String: String] = [:]
-    private var persistedRealtimeItemTexts: [String: String] = [:]
     private var realtimeDisconnectWorkItem: DispatchWorkItem?
+    private var realtimeFlushTimeoutWorkItem: DispatchWorkItem?
+    private var realtimeFlushDebounceWorkItem: DispatchWorkItem?
+    private var isWaitingForRealtimeFlush = false
     private var inFlightSegmentTranscriptions: Set<UUID> = []
     private var cancellables = Set<AnyCancellable>()
     private let networkMonitor = NetworkMonitor.shared
@@ -94,6 +95,9 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     }
     
     init(modelContext: ModelContext) {
+        // #region agent log
+        DebugSessionLog.write(hypothesisId: "H7", location: "RecordingViewModel.swift:init", message: "RecordingViewModel init start", data: [:])
+        // #endregion
         self.modelContext = modelContext
         self.audioService = AudioService()
         self.transcriptionService = TranscriptionService()
@@ -103,6 +107,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         configureRealtimeCallbacks()
         // Initialize session translation language from persisted default
         self.sessionTranslationLanguage = SettingsStore().defaultTranslationLanguage
+        transcriptionService.preferredLanguages = Languages.transcriptionHints(from: selectedLanguage)
         // Observe network status changes
         networkMonitor.onStatusChange = { [weak self] online in
             guard let self = self else { return }
@@ -169,19 +174,37 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
             realtimeStatusText = "Realtime transcription is live"
             clearErrorMessage()
             AnalyticsService.shared.trackEvent("Realtime Transcription Connected", properties: nil)
+        case .reconnecting(let attempt):
+            isRealtimeConnected = false
+            realtimeStatusText = "Reconnecting live captions…"
+            AnalyticsService.shared.trackEvent("Realtime Transcription Reconnecting", properties: [
+                "attempt": attempt
+            ])
         case .delta(let itemID, let text):
             updateLiveTranscript(itemID: itemID, text: text)
         case .completed(let itemID, let transcript):
             finalizeLiveTranscript(itemID: itemID, transcript: transcript)
-            persistRealtimeTranscript(itemID: itemID, transcript: transcript)
+            if isWaitingForRealtimeFlush {
+                scheduleRealtimeFlushDebounce()
+            }
         case .failed(let message):
+            // #region agent log
+            DebugSessionLog.write(hypothesisId: "H2", location: "RecordingViewModel.swift:handleRealtimeEvent.failed", message: "Realtime failed UI path", data: [
+                "error": message,
+                "alreadyFallback": isRealtimeFallbackActive,
+                "isRecording": isRecording,
+                "liveTranscriptLength": liveTranscript.count
+            ])
+            // #endregion
             isRealtimeConnected = false
             isRealtimeFallbackActive = true
             hidesSegmentRowsDuringRealtime = false
-            activeRecording?.transcriptionModeRawValue = TranscriptionMode.segments20s.rawValue
-            try? modelContext.save()
-            realtimeStatusText = "Realtime stopped. Continuing with 20-second segments."
-            setErrorMessage("Realtime transcription stopped (\(message)). Falling back to 20-second segments.")
+            realtimeStatusText = isRecording ? "Live captions paused. Audio is still being saved." : nil
+            if isRecording {
+                setErrorMessage("Live captions paused. Your recording is still being saved.")
+            } else {
+                setErrorMessage("Realtime transcription stopped (\(message)).")
+            }
             AnalyticsService.shared.trackEvent("Realtime Transcription Failed", properties: [
                 "error": message
             ])
@@ -196,11 +219,15 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     private func resetLiveTranscript() {
         realtimeDisconnectWorkItem?.cancel()
         realtimeDisconnectWorkItem = nil
+        realtimeFlushTimeoutWorkItem?.cancel()
+        realtimeFlushTimeoutWorkItem = nil
+        realtimeFlushDebounceWorkItem?.cancel()
+        realtimeFlushDebounceWorkItem = nil
+        isWaitingForRealtimeFlush = false
         liveTranscript = ""
         liveTranscriptWords = []
         realtimeItemOrder = []
         realtimeItemTexts = [:]
-        persistedRealtimeItemTexts = [:]
         realtimeStatusText = nil
         isRealtimeConnected = false
         isRealtimeFallbackActive = false
@@ -323,58 +350,6 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         return latestTimestamp < 1
     }
 
-    private func persistRealtimeTranscript(itemID: String, transcript: String) {
-        let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty,
-              activeTranscriptionMode == .realtimeOpenAI,
-              !isRealtimeFallbackActive,
-              let rec = activeRecording else { return }
-
-        let saveCompletedText: (String) -> Void = { [weak self] finalText in
-            guard let self else { return }
-            self.registerRealtimeItemIfNeeded(itemID)
-            self.persistedRealtimeItemTexts[itemID] = finalText
-
-            let fullText = self.realtimeItemOrder
-                .compactMap { self.persistedRealtimeItemTexts[$0]?.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty }
-                .joined(separator: " ")
-            guard !fullText.isEmpty else { return }
-
-            let targetSegment = self.realtimeTranscriptSegment(for: rec)
-            targetSegment.status = "completed"
-            targetSegment.text = fullText
-
-            if rec.title == nil {
-                let textCopy = fullText
-                Task { @MainActor in
-                    let (shortTitle, _) = await SummaryService.generateShortSummary(for: textCopy)
-                    rec.title = shortTitle
-                    try? self.modelContext.save()
-                    self.fetchRecordings()
-                }
-            }
-
-            try? self.modelContext.save()
-            self.fetchRecordings()
-            self.attemptAutoSummarizeIfComplete(for: rec)
-        }
-
-        AnalyticsService.shared.trackEvent("Realtime Transcription Completed", properties: [
-            "text_length": trimmed.count,
-            "has_translation": activeTargetTranslationLanguage != nil
-        ])
-
-        if let target = activeTargetTranslationLanguage, !target.isEmpty {
-            Task { @MainActor in
-                let translated = await SummaryService.translate(text: trimmed, to: target)
-                saveCompletedText(translated)
-            }
-        } else {
-            saveCompletedText(trimmed)
-        }
-    }
-
     private func realtimeTranscriptSegment(for recording: Recording) -> TranscriptionSegment {
         let segments = (fetchSegments(for: recording) ?? []).sorted { $0.timestamp < $1.timestamp }
         if let segment = segments.first(where: { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) {
@@ -399,6 +374,16 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
             return
         }
 
+        let emptyProcessing = segments.filter { $0.status == "processing" && $0.text.isEmpty }.count
+        // #region agent log
+        DebugSessionLog.write(hypothesisId: "H5", location: "RecordingViewModel.swift:completeEmptyRealtimeSegments", message: "Marking empty realtime segments completed", data: [
+            "emptyProcessingCount": emptyProcessing,
+            "totalSegments": segments.count,
+            "liveTranscriptLength": liveTranscript.count,
+            "recordingDuration": recording.duration
+        ])
+        // #endregion
+
         var changed = false
         for segment in segments where segment.status == "processing" && segment.text.isEmpty {
             segment.status = "completed"
@@ -416,13 +401,27 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         isStartingRecording = true
         realtimeDisconnectWorkItem?.cancel()
         realtimeDisconnectWorkItem = nil
+        realtimeFlushTimeoutWorkItem?.cancel()
+        realtimeFlushTimeoutWorkItem = nil
+        realtimeFlushDebounceWorkItem?.cancel()
+        realtimeFlushDebounceWorkItem = nil
+        isWaitingForRealtimeFlush = false
         inFlightSegmentTranscriptions.removeAll()
 
         let requestedMode = preRecordingTranscriptionMode
         let canUseRealtime = requestedMode == .realtimeOpenAI && isOnline && realtimeTranscriptionService.isConfigured
         activeTranscriptionMode = canUseRealtime ? .realtimeOpenAI : .segments20s
+        // #region agent log
+        DebugSessionLog.write(hypothesisId: "H5", location: "RecordingViewModel.swift:startRecording", message: "Recording start mode", data: [
+            "requestedMode": requestedMode.rawValue,
+            "canUseRealtime": canUseRealtime,
+            "isOnline": isOnline,
+            "activeMode": activeTranscriptionMode.rawValue
+        ])
+        // #endregion
         resetLiveTranscript()
         clearErrorMessage()
+        transcriptionService.preferredLanguages = transcriptionLanguageHints()
 
         if requestedMode == .realtimeOpenAI && !canUseRealtime {
             isRealtimeFallbackActive = true
@@ -437,7 +436,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
             realtimeStatusText = "Preparing realtime..."
         }
         
-        audioService.startRecording { success, filePath in
+        audioService.startRecording(splitIntoSegments: activeTranscriptionMode == .segments20s) { success, filePath in
             if success {
                 DispatchQueue.main.async {
                     self.isStartingRecording = false
@@ -465,7 +464,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
 
                     if self.activeTranscriptionMode == .realtimeOpenAI {
                         self.realtimeStatusText = "Connecting to realtime transcription..."
-                        self.realtimeTranscriptionService.connect(language: self.selectedLanguage == "auto" ? nil : self.selectedLanguage)
+                        self.realtimeTranscriptionService.connect(languages: self.transcriptionLanguageHints())
                     }
                 }
             } else {
@@ -502,25 +501,27 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                 self.resetPreRecordingTranscriptionMode()
                 self.hidesSegmentRowsDuringRealtime = false
                 if self.activeTranscriptionMode == .realtimeOpenAI {
-                    self.realtimeStatusText = "Finishing realtime transcript..."
-                    self.realtimeTranscriptionService.finish()
-                    self.realtimeDisconnectWorkItem?.cancel()
-                    let disconnectWork = DispatchWorkItem { [weak self] in
-                        guard let self else { return }
-                        self.realtimeTranscriptionService.disconnect()
-                        self.completeEmptyRealtimeSegments()
-                        if let rec = self.activeRecording {
-                            self.attemptAutoSummarizeIfComplete(for: rec)
-                        }
-                    }
-                    self.realtimeDisconnectWorkItem = disconnectWork
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2, execute: disconnectWork)
+                    self.beginRealtimeStopFlush()
                 } else if let rec = self.activeRecording {
                     self.ensurePendingSegmentsAreQueuedAfterStop(for: rec)
                 }
                 
                 if let rec = self.activeRecording {
+                    if let duration, duration > rec.duration {
+                        rec.duration = duration
+                    }
                     let segmentCount = self.segments(for: rec).count
+                    // #region agent log
+                    DebugSessionLog.write(hypothesisId: "H3", location: "RecordingViewModel.swift:stopRecording", message: "Recording stopped", data: [
+                        "audioServiceDuration": duration ?? -1,
+                        "storedDuration": rec.duration,
+                        "segmentCount": segmentCount,
+                        "liveTranscriptLength": self.liveTranscript.count,
+                        "mode": self.activeTranscriptionMode.rawValue,
+                        "fallbackActive": self.isRealtimeFallbackActive,
+                        "willDisconnectInMs": self.activeTranscriptionMode == .realtimeOpenAI ? 6000 : 0
+                    ])
+                    // #endregion
                     AnalyticsService.shared.trackEvent("Recording Stopped", properties: [
                         "recording_duration": rec.duration,
                         "segment_count": segmentCount,
@@ -531,6 +532,118 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
             }
             // The last segment will be handled by the delegate callback
         }
+    }
+
+    private func beginRealtimeStopFlush() {
+        isWaitingForRealtimeFlush = true
+        realtimeStatusText = "Finishing realtime transcript..."
+        realtimeTranscriptionService.finish()
+        scheduleRealtimeFlushTimeout()
+        scheduleRealtimeFlushDebounce()
+    }
+
+    private func scheduleRealtimeFlushTimeout() {
+        realtimeFlushTimeoutWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.completeRealtimeStopFlush()
+        }
+        realtimeFlushTimeoutWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6.0, execute: work)
+    }
+
+    private func scheduleRealtimeFlushDebounce() {
+        realtimeFlushDebounceWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.completeRealtimeStopFlush()
+        }
+        realtimeFlushDebounceWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0, execute: work)
+    }
+
+    private func completeRealtimeStopFlush() {
+        guard isWaitingForRealtimeFlush else { return }
+        isWaitingForRealtimeFlush = false
+        realtimeFlushTimeoutWorkItem?.cancel()
+        realtimeFlushDebounceWorkItem?.cancel()
+        realtimeFlushTimeoutWorkItem = nil
+        realtimeFlushDebounceWorkItem = nil
+        persistLiveTranscriptIfNeeded()
+        realtimeTranscriptionService.disconnect()
+        if let rec = activeRecording {
+            transcribeRealtimeRecordingIfNeeded(rec)
+        }
+    }
+
+    private func transcribeRealtimeRecordingIfNeeded(_ recording: Recording) {
+        let url = URL(fileURLWithPath: recording.filePath)
+        let fileSize = (try? FileManager.default.attributesOfItem(atPath: recording.filePath)[.size] as? NSNumber)?.intValue ?? 0
+        // #region agent log
+        DebugSessionLog.write(hypothesisId: "H5", location: "RecordingViewModel.swift:transcribeRealtimeRecordingIfNeeded", message: "Transcribing saved WAV after realtime stop", data: [
+            "fileSize": fileSize,
+            "duration": recording.duration,
+            "fileExists": FileManager.default.fileExists(atPath: recording.filePath)
+        ])
+        // #endregion
+
+        guard FileManager.default.fileExists(atPath: recording.filePath), fileSize > 1000 else {
+            realtimeStatusText = nil
+            setErrorMessage("Nothing was captured. Please try recording again.")
+            completeEmptyRealtimeSegments()
+            return
+        }
+
+        realtimeStatusText = "Transcribing recording..."
+        startFileTranscription(url: url, duration: recording.duration, startTime: 0, recording: recording)
+    }
+
+    private func persistLiveTranscriptIfNeeded() {
+        let text = liveTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, let rec = activeRecording else { return }
+        let segment = realtimeTranscriptSegment(for: rec)
+        if segment.text.trimmingCharacters(in: .whitespacesAndNewlines).count < text.count {
+            segment.status = "completed"
+            segment.text = text
+        }
+        assignTitleIfNeeded(to: rec, from: text)
+        try? modelContext.save()
+        fetchRecordings()
+    }
+
+    private func assignTitleIfNeeded(to recording: Recording, from text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard recording.title == nil || recording.title?.isEmpty == true, !trimmed.isEmpty else { return }
+
+        recording.title = fallbackTitle(from: trimmed)
+        try? modelContext.save()
+        fetchRecordings()
+
+        let textCopy = trimmed
+        Task { @MainActor in
+            let (shortTitle, _) = await SummaryService.generateShortSummary(for: textCopy)
+            let improved = shortTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !improved.isEmpty else { return }
+            recording.title = improved
+            try? self.modelContext.save()
+            self.fetchRecordings()
+        }
+    }
+
+    private func fallbackTitle(from text: String) -> String {
+        let collapsed = text.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+        let trimmed = collapsed.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count > 40 else { return trimmed }
+        let prefix = String(trimmed.prefix(40))
+        if let lastSpace = prefix.lastIndex(of: " ") {
+            return String(prefix[..<lastSpace]) + "…"
+        }
+        return prefix + "…"
+    }
+
+    private func transcriptionLanguageHints() -> [String] {
+        if selectedLanguage.lowercased() != Languages.autoCode {
+            return Languages.transcriptionHints(from: selectedLanguage)
+        }
+        return Languages.transcriptionHints(from: settingsStore.transcriptionLanguage)
     }
     
     func resumeRecording() {
@@ -628,8 +741,19 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         }
         // Update duration
         rec.duration += duration
+        // #region agent log
+        DebugSessionLog.write(hypothesisId: "H4", location: "RecordingViewModel.swift:didFinishSegment", message: "Segment finished duration update", data: [
+            "addedDuration": duration,
+            "storedDurationAfter": rec.duration,
+            "startTime": startTime,
+            "mode": activeTranscriptionMode.rawValue,
+            "realtimeSkipTranscribe": activeTranscriptionMode == .realtimeOpenAI && !isRealtimeFallbackActive,
+            "isRecording": isRecording
+        ])
+        // #endregion
 
         if activeTranscriptionMode == .realtimeOpenAI && !isRealtimeFallbackActive {
+            rec.filePath = url.path
             AnalyticsService.shared.trackEvent("Realtime Audio Segment Saved", properties: [
                 "segment_duration": duration,
                 "segment_start_time": startTime
@@ -639,107 +763,127 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
             return
         }
 
-        let segment = TranscriptionSegment(text: "", status: "processing", timestamp: startTime, filePath: url.path, recording: rec)
-        self.modelContext.insert(segment)
-        try? self.modelContext.save()
-        self.fetchRecordings()
+        startFileTranscription(url: url, duration: duration, startTime: startTime, recording: rec)
+    }
 
-        // Check if we're online before attempting transcription
-        if self.isOnline {
-            self.inFlightSegmentTranscriptions.insert(segment.id)
-            AnalyticsService.shared.trackEvent("Transcription Started", properties: [
-                "segment_duration": duration,
-                "segment_start_time": startTime,
-                "is_online": true
-            ])
-            // Start transcription
-            self.transcriptionService.transcribe(audioURL: url, segmentStart: startTime, duration: duration) { [weak self] text, error in
-                DispatchQueue.main.async {
-                    self?.inFlightSegmentTranscriptions.remove(segment.id)
-                    if let error = error {
-                        if let transcriptionError = error as? TranscriptionError, transcriptionError == .noNetwork {
-                            segment.status = "queued"
-                            AnalyticsService.shared.trackEvent("Transcription Queued", properties: [
-                                "reason": "no_network",
-                                "segment_duration": duration
-                            ])
-                        } else {
-                            segment.status = "failed"
-                            self?.setErrorMessage("Transcription failed: \(error.localizedDescription)")
-                            AnalyticsService.shared.trackEvent("Transcription Failed", properties: [
-                                "error": error.localizedDescription,
-                                "segment_duration": duration
-                            ])
-                        }
-                        segment.text = ""
-                    } else if let text = text {
-                        self?.clearErrorMessage()
-                        AnalyticsService.shared.trackEvent("Transcription Completed", properties: [
-                            "segment_duration": duration,
-                            "text_length": text.count,
-                            "has_translation": self?.activeTargetTranslationLanguage != nil
-                        ])
-                        // Translate to the session's target language if specified
-                        if let target = self?.activeTargetTranslationLanguage, !target.isEmpty {
-                            Task { @MainActor in
-                                let translated = await SummaryService.translate(text: text, to: target)
-                                segment.status = "completed"
-                                segment.text = translated
-                                // Set the title as soon as first segment is ready
-                                if rec.title == nil && !translated.isEmpty {
-                                    let translatedCopy = translated
-                                    Task { @MainActor in
-                                        let (shortTitle, _) = await SummaryService.generateShortSummary(for: translatedCopy)
-                                        rec.title = shortTitle
-                                        try? self?.modelContext.save()
-                                        self?.fetchRecordings()
-                                    }
-                                }
-                                try? self?.modelContext.save()
-                                self?.fetchRecordings()
-                                // Attempt auto-summary now that this segment is completed
-                                self?.attemptAutoSummarizeIfComplete(for: rec)
-                            }
-                        } else {
-                            Task { @MainActor in
-                                segment.status = "completed"
-                                segment.text = text
-                                // Set the title as soon as the first segment is completed and title is not set
-                                if rec.title == nil && !text.isEmpty {
-                                    let textCopy = text
-                                    Task { @MainActor in
-                                        let (shortTitle, _) = await SummaryService.generateShortSummary(for: textCopy)
-                                        rec.title = shortTitle
-                                        try? self?.modelContext.save()
-                                        self?.fetchRecordings()
-                                    }
-                                }
-                                // Persist and attempt auto-summary
-                                try? self?.modelContext.save()
-                                self?.fetchRecordings()
-                                self?.attemptAutoSummarizeIfComplete(for: rec)
-                            }
-                        }
-                    }
-                    if segment.status != "processing" {
-                        try? self?.modelContext.save()
-                        self?.fetchRecordings()
-                    // Attempt auto-summary if recording is finished and no pending segments
-                    if let rec = self?.activeRecording {
-                        self?.attemptAutoSummarizeIfComplete(for: rec)
-                    }
-                    }
-                }
+    private func startFileTranscription(url: URL, duration: TimeInterval, startTime: TimeInterval, recording rec: Recording) {
+        let existing = segments(for: rec).first { $0.filePath == url.path } ?? segments(for: rec).first
+        let segment: TranscriptionSegment
+        if let existing {
+            segment = existing
+            segment.filePath = url.path
+            if segment.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                segment.status = "processing"
             }
         } else {
-            // Queue for later processing
+            segment = TranscriptionSegment(text: "", status: "processing", timestamp: startTime, filePath: url.path, recording: rec)
+            modelContext.insert(segment)
+        }
+        try? modelContext.save()
+        fetchRecordings()
+
+        guard isOnline else {
             segment.status = "queued"
             AnalyticsService.shared.trackEvent("Transcription Queued", properties: [
                 "reason": "offline",
                 "segment_duration": duration
             ])
-            try? self.modelContext.save()
-            self.fetchRecordings()
+            try? modelContext.save()
+            fetchRecordings()
+            return
+        }
+
+        inFlightSegmentTranscriptions.insert(segment.id)
+        AnalyticsService.shared.trackEvent("Transcription Started", properties: [
+            "segment_duration": duration,
+            "segment_start_time": startTime,
+            "is_online": true
+        ])
+        transcriptionService.transcribe(audioURL: url, segmentStart: startTime, duration: duration) { [weak self] text, error in
+            DispatchQueue.main.async {
+                self?.inFlightSegmentTranscriptions.remove(segment.id)
+                self?.applyTranscriptionResult(segment: segment, recording: rec, duration: duration, text: text, error: error)
+            }
+        }
+    }
+
+    private func applyTranscriptionResult(
+        segment: TranscriptionSegment,
+        recording rec: Recording,
+        duration: TimeInterval,
+        text: String?,
+        error: Error?
+    ) {
+        if !isRecording {
+            realtimeStatusText = nil
+        }
+
+        if let error {
+            let existingText = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !existingText.isEmpty {
+                segment.status = "completed"
+                assignTitleIfNeeded(to: rec, from: existingText)
+                AnalyticsService.shared.trackEvent("Transcription Failed", properties: [
+                    "error": error.localizedDescription,
+                    "segment_duration": duration,
+                    "kept_live_transcript": true
+                ])
+            } else if let transcriptionError = error as? TranscriptionError, transcriptionError == .noNetwork {
+                segment.status = "queued"
+                AnalyticsService.shared.trackEvent("Transcription Queued", properties: [
+                    "reason": "no_network",
+                    "segment_duration": duration
+                ])
+                segment.text = ""
+            } else {
+                segment.status = "failed"
+                setErrorMessage("Transcription failed: \(error.localizedDescription)")
+                AnalyticsService.shared.trackEvent("Transcription Failed", properties: [
+                    "error": error.localizedDescription,
+                    "segment_duration": duration
+                ])
+                segment.text = ""
+            }
+        } else if let text {
+            clearErrorMessage()
+            // #region agent log
+            DebugSessionLog.write(hypothesisId: "H5", location: "RecordingViewModel.swift:applyTranscriptionResult", message: "File transcription finished", data: [
+                "textLength": text.count,
+                "duration": duration,
+                "isEmpty": text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ])
+            // #endregion
+            AnalyticsService.shared.trackEvent("Transcription Completed", properties: [
+                "segment_duration": duration,
+                "text_length": text.count,
+                "has_translation": activeTargetTranslationLanguage != nil
+            ])
+            if let target = activeTargetTranslationLanguage, !target.isEmpty {
+                Task { @MainActor in
+                    let translated = await SummaryService.translate(text: text, to: target)
+                    segment.status = "completed"
+                    segment.text = translated
+                    self.assignTitleIfNeeded(to: rec, from: translated)
+                    try? self.modelContext.save()
+                    self.fetchRecordings()
+                    self.attemptAutoSummarizeIfComplete(for: rec)
+                }
+            } else {
+                Task { @MainActor in
+                    segment.status = "completed"
+                    segment.text = text
+                    self.assignTitleIfNeeded(to: rec, from: text)
+                    try? self.modelContext.save()
+                    self.fetchRecordings()
+                    self.attemptAutoSummarizeIfComplete(for: rec)
+                }
+            }
+        }
+
+        if segment.status != "processing" {
+            try? modelContext.save()
+            fetchRecordings()
+            attemptAutoSummarizeIfComplete(for: rec)
         }
     }
     
