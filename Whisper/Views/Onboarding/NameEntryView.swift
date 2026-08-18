@@ -11,6 +11,7 @@ struct NameEntryView: View {
     @Binding var userName: String
     let isValid: Bool
     let onSubmit: () -> Void
+    let onBack: (() -> Void)?
     let onUserNameChanged: ((String) -> Void)?
     
     @Environment(\.colorScheme) private var colorScheme
@@ -20,11 +21,13 @@ struct NameEntryView: View {
         userName: Binding<String>,
         isValid: Bool,
         onSubmit: @escaping () -> Void,
+        onBack: (() -> Void)? = nil,
         onUserNameChanged: ((String) -> Void)? = nil
     ) {
         self._userName = userName
         self.isValid = isValid
         self.onSubmit = onSubmit
+        self.onBack = onBack
         self.onUserNameChanged = onUserNameChanged
     }
     
@@ -34,6 +37,23 @@ struct NameEntryView: View {
     
     var body: some View {
         VStack(spacing: 32) {
+            HStack {
+                if let onBack {
+                    Button(action: {
+                        HapticsManager.shared.impact(.light)
+                        onBack()
+                    }) {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundColor(.primary)
+                            .frame(width: 44, height: 44)
+                    }
+                    .buttonStyle(.plain)
+                }
+                Spacer()
+            }
+            .padding(.horizontal, 8)
+
             Spacer()
             
             // Title

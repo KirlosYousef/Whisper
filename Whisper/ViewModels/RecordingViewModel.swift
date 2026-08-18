@@ -105,8 +105,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         fetchRecordings()
         audioService.delegate = self
         configureRealtimeCallbacks()
-        // Initialize session translation language from persisted default
-        self.sessionTranslationLanguage = SettingsStore().defaultTranslationLanguage
+        syncSessionDefaultsFromSettings()
         transcriptionService.preferredLanguages = Languages.transcriptionHints(from: selectedLanguage)
         // Observe network status changes
         networkMonitor.onStatusChange = { [weak self] online in
@@ -128,6 +127,10 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         let allSegments = (try? modelContext.fetch(descriptor)) ?? []
         return allSegments.filter { $0.recording?.id == recording.id }
             .sorted { $0.timestamp < $1.timestamp }
+    }
+
+    func syncSessionDefaultsFromSettings() {
+        sessionTranslationLanguage = settingsStore.defaultTranslationLanguage
     }
 
     var preRecordingTranscriptionMode: TranscriptionMode {
@@ -767,11 +770,10 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     }
 
     private func startFileTranscription(url: URL, duration: TimeInterval, startTime: TimeInterval, recording rec: Recording) {
-        let existing = segments(for: rec).first { $0.filePath == url.path } ?? segments(for: rec).first
+        let existing = segments(for: rec).first { $0.filePath == url.path }
         let segment: TranscriptionSegment
         if let existing {
             segment = existing
-            segment.filePath = url.path
             if segment.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 segment.status = "processing"
             }

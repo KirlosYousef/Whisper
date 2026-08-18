@@ -18,9 +18,9 @@ struct WhisperApp: App {
     @StateObject private var settingsStore = SettingsStore()
     @State private var didFinishLaunch = false
 
-    /// Debug-only: skip onboarding and the blocking paywall so the main app can be tested.
-    /// Release builds always show both.
-    private var bypassOnboardingAndPaywall: Bool {
+    /// Debug-only: skip the blocking paywall so the main app can be tested after onboarding.
+    /// Release builds always show the paywall until the user is premium.
+    private var bypassForcedPaywall: Bool {
         #if DEBUG
         true
         #else
@@ -29,11 +29,11 @@ struct WhisperApp: App {
     }
 
     private var shouldShowMainApp: Bool {
-        bypassOnboardingAndPaywall || settingsStore.hasCompletedOnboarding
+        settingsStore.hasCompletedOnboarding
     }
 
     private var shouldShowForcedPaywall: Bool {
-        guard !bypassOnboardingAndPaywall else { return false }
+        guard !bypassForcedPaywall else { return false }
         return didFinishLaunch && !paywallManager.isPremium
     }
     
@@ -101,6 +101,7 @@ struct WhisperApp: App {
                     }
                     .tint(.primary)
                     .onAppear {
+                        viewModel.syncSessionDefaultsFromSettings()
                         HapticsManager.shared.prepare()
                     }
                     .onChange(of: selectedTab) { oldValue, newValue in

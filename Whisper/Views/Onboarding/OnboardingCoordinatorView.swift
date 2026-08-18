@@ -11,10 +11,9 @@ struct OnboardingCoordinatorView: View {
     @StateObject private var viewModel = OnboardingViewModel()
     @EnvironmentObject private var paywallManager: PaywallManager
     @State private var showPaywall = false
-    
+
     var body: some View {
         ZStack {
-            // Main onboarding flow
             Group {
                 switch viewModel.currentStep {
                 case .introduction:
@@ -22,7 +21,7 @@ struct OnboardingCoordinatorView: View {
                         viewModel.proceedToQuestions()
                     }
                     .transition(.opacity.combined(with: .move(edge: .trailing)))
-                
+
                 case .questions:
                     if let question = viewModel.currentQuestion {
                         OnboardingQuestionView(
@@ -40,40 +39,60 @@ struct OnboardingCoordinatorView: View {
                                     viewModel.nextQuestion()
                                 }
                             },
+                            onBack: {
+                                viewModel.goBack()
+                            },
                             canProceed: viewModel.canProceedToNextQuestion
                         )
+                        .id(question.id)
                         .transition(.asymmetric(
                             insertion: .move(edge: .trailing).combined(with: .opacity),
                             removal: .move(edge: .leading).combined(with: .opacity)
                         ))
                     }
-                
+
                 case .nameEntry:
                     NameEntryView(
                         userName: $viewModel.userName,
                         isValid: viewModel.canSubmitName,
                         onSubmit: {
-                            viewModel.completeOnboarding()
-                            // Show paywall after a brief delay
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                                showPaywall = true
-                            }
+                            viewModel.proceedToMicrophone()
+                        },
+                        onBack: {
+                            viewModel.goBack()
                         },
                         onUserNameChanged: { name in
                             viewModel.updateUserName(name)
                         }
                     )
                     .transition(.opacity.combined(with: .move(edge: .trailing)))
-                
+
+                case .microphone:
+                    OnboardingPermissionView(
+                        isRequesting: viewModel.isRequestingMicrophonePermission,
+                        onAllow: {
+                            viewModel.requestMicrophonePermission {
+                                finishOnboarding()
+                            }
+                        },
+                        onSkip: {
+                            viewModel.skipMicrophonePermission {
+                                finishOnboarding()
+                            }
+                        },
+                        onBack: {
+                            viewModel.goBack()
+                        }
+                    )
+                    .transition(.opacity.combined(with: .move(edge: .trailing)))
+
                 case .completed:
-                    // This state is handled by showing paywall
                     Color.clear
                 }
             }
             .animation(.spring(response: 0.4, dampingFraction: 0.8), value: viewModel.currentStep)
             .animation(.spring(response: 0.4, dampingFraction: 0.8), value: viewModel.currentQuestionIndex)
-            
-            // Paywall overlay
+
             if showPaywall {
                 PayWallView(displayCloseButton: false)
                     .transition(.opacity)
@@ -84,5 +103,11 @@ struct OnboardingCoordinatorView: View {
             HapticsManager.shared.prepare()
         }
     }
-}
 
+    private func finishOnboarding() {
+        viewModel.completeOnboarding()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            showPaywall = true
+        }
+    }
+}

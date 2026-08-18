@@ -23,6 +23,18 @@ struct SettingsView: View {
                 sectionLabel("GENERAL")
                 VStack(spacing: 0) {
                     languageMenuRow(
+                        title: "Transcription Language",
+                        current: store.transcriptionLanguage
+                    ) { newValue in
+                        AnalyticsService.shared.trackEvent("Transcription Language Changed", properties: [
+                            "old_language": store.transcriptionLanguage,
+                            "new_language": newValue
+                        ])
+                        store.transcriptionLanguage = newValue
+                        HapticsManager.shared.selection()
+                    }
+                    Divider().padding(.leading, 64)
+                    languageMenuRow(
                         title: "Default Translation",
                         current: store.defaultTranslationLanguage
                     ) { newValue in
