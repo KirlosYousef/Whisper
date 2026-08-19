@@ -16,6 +16,7 @@ struct WhisperApp: App {
     @State private var selectedTab: Int = 0
     @StateObject private var viewModel: RecordingViewModel
     @StateObject private var settingsStore = SettingsStore()
+    @StateObject private var lovePromptManager = LovePromptManager.shared
     @State private var didFinishLaunch = false
 
     /// Debug-only: skip the blocking paywall so the main app can be tested after onboarding.
@@ -119,6 +120,15 @@ struct WhisperApp: App {
                                     "source": "main_app"
                                 ])
                             }
+                    }
+
+                    if lovePromptManager.isPresented
+                        && !viewModel.isRecording
+                        && viewModel.identifyingSpeakerRecordingIds.isEmpty
+                        && !shouldShowForcedPaywall {
+                        LovePromptView()
+                            .zIndex(20)
+                            .transition(.opacity.combined(with: .scale(scale: 0.98)))
                     }
                 } else {
                     // Onboarding flow

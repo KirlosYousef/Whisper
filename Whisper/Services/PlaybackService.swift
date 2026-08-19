@@ -40,7 +40,6 @@ final class PlaybackService: NSObject, AVAudioPlayerDelegate {
             startRangeTimer()
         } catch {
             print("PlaybackService: failed to play \(url): \(error)")
-            onFinish?()
         }
     }
     

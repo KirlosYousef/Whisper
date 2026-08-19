@@ -90,6 +90,7 @@ struct TranscriptDetailView: View {
                                 ShareLink(item: hashtags) {
                                     Label("Share Hashtags", systemImage: "number")
                                 }
+                                .lovePromptOnShare()
                             } else {
                                 Button {
                                     copyAlertMessage = "No keywords available to share"
@@ -101,6 +102,7 @@ struct TranscriptDetailView: View {
                                 ShareLink(item: keywords.joined(separator: ", ")) {
                                     Label("Share Keywords", systemImage: "textformat")
                                 }
+                                .lovePromptOnShare()
                             } else {
                                 Button {
                                     copyAlertMessage = "No keywords available to share"
@@ -158,6 +160,7 @@ struct TranscriptDetailView: View {
                                     .foregroundColor(.primary)
                                     .frame(width: 32, height: 32)
                             }
+                            .lovePromptOnShare()
                             .simultaneousGesture(TapGesture().onEnded {
                                 AnalyticsService.shared.trackEvent("Summary Shared", properties: [
                                     "summary_length": summaryText.count,
@@ -189,9 +192,11 @@ struct TranscriptDetailView: View {
                                 ShareLink(item: hashtags) {
                                     Label("Share Hashtags", systemImage: "number")
                                 }
+                                .lovePromptOnShare()
                                 ShareLink(item: keywords.joined(separator: ", ")) {
                                     Label("Share Keywords", systemImage: "textformat")
                                 }
+                                .lovePromptOnShare()
                             } label: {
                                 Image(systemName: "arrowshape.turn.up.forward.fill")
                                     .foregroundColor(.primary)
@@ -358,6 +363,9 @@ struct TranscriptDetailView: View {
                         .foregroundColor(.primary)
                         .frame(width: 32, height: 32)
                 }
+                .simultaneousGesture(TapGesture().onEnded {
+                    LovePromptManager.shared.noteShareOrExport(delay: 2.0)
+                })
             }
 
             Text(fullTranscriptTimeRange)
@@ -489,6 +497,7 @@ struct TranscriptDetailView: View {
                     "segment_timestamp": segment.timestamp,
                     "text_length": segment.text.count
                 ])
+                LovePromptManager.shared.noteShareOrExport(delay: 2.0)
             })
 
             Button {
@@ -496,6 +505,7 @@ struct TranscriptDetailView: View {
                 guard !text.isEmpty else { return }
                 UIPasteboard.general.string = text
                 HapticsManager.shared.notification(.success)
+                LovePromptManager.shared.noteShareOrExport(delay: 0.8)
             } label: {
                 Label("Copy Text", systemImage: "doc.on.doc")
             }

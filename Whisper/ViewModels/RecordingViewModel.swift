@@ -541,6 +541,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                         "is_online": self.isOnline,
                         "transcription_mode": self.activeTranscriptionMode.rawValue
                     ])
+                    LovePromptManager.shared.noteRecordingFinished(duration: rec.duration)
                 }
             }
             // The last segment will be handled by the delegate callback
@@ -1030,7 +1031,9 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
             "result_length": result.count,
             "has_result": !result.isEmpty
         ])
-        
+        if !result.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            LovePromptManager.shared.noteAskAct()
+        }
         return result
     }
     
@@ -1069,6 +1072,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
             recording.keywords = keywords
             try? modelContext.save()
             fetchRecordings()
+            LovePromptManager.shared.noteShareOrExport()
             
             AnalyticsService.shared.trackEvent("Keywords Extraction Completed", properties: [
                 "keyword_count": keywords.count,
@@ -1396,7 +1400,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
             }
             clearErrorMessage()
             let url = URL(fileURLWithPath: exact.filePath)
-            PlaybackService.shared.playSegment(at: url)
+            playWholeFile(url, recordingId: recording.id)
             return
         }
         guard let nearest = sorted.min(by: { abs($0.timestamp - timestamp) < abs($1.timestamp - timestamp) }) else {
@@ -1407,7 +1411,15 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
             return
         }
         clearErrorMessage()
-        PlaybackService.shared.playSegment(at: URL(fileURLWithPath: nearest.filePath))
+        playWholeFile(URL(fileURLWithPath: nearest.filePath), recordingId: recording.id)
+    }
+
+    private func playWholeFile(_ url: URL, recordingId: UUID) {
+        PlaybackService.shared.play(url: url, start: 0, end: .greatestFiniteMagnitude) {
+            Task { @MainActor in
+                LovePromptManager.shared.notePlaybackFinished(recordingId: recordingId)
+            }
+        }
     }
     
     func play(segment: TranscriptionSegment, onFinish: (() -> Void)? = nil) {
@@ -1420,10 +1432,19 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
             "has_text": !segment.text.isEmpty
         ])
         clearErrorMessage()
+        let recordingId = segment.recording?.id
+        let wrappedFinish: () -> Void = {
+            Task { @MainActor in
+                if let recordingId {
+                    LovePromptManager.shared.notePlaybackFinished(recordingId: recordingId)
+                }
+                onFinish?()
+            }
+        }
         if segment.canPlayRangedSession {
-            PlaybackService.shared.play(url: url, start: segment.playbackStart, end: segment.playbackEnd, onFinish: onFinish)
+            PlaybackService.shared.play(url: url, start: segment.playbackStart, end: segment.playbackEnd, onFinish: wrappedFinish)
         } else {
-            PlaybackService.shared.play(url: url, start: 0, end: .greatestFiniteMagnitude, onFinish: onFinish)
+            PlaybackService.shared.play(url: url, start: 0, end: .greatestFiniteMagnitude, onFinish: wrappedFinish)
         }
     }
     

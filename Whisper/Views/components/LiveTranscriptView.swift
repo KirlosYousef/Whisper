@@ -4,21 +4,36 @@ struct LiveTranscriptView: View {
     let words: [String]
     let isConnected: Bool
     let isRecording: Bool
+    var bottomAnchorId: String = "live-transcript-end"
     @Environment(\.colorScheme) private var colorScheme
     @State private var highlightedWordKey: String?
     @State private var highlightVersion = 0
 
     var body: some View {
-        content
-            .padding(16)
-            .frame(maxWidth: .infinity, minHeight: 220, alignment: .topLeading)
-            .background(background)
-    }
-
-    private var content: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
-            transcriptScroller
+            transcriptText
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 4)
+
+            Color.clear
+                .frame(height: 1)
+                .id(bottomAnchorId)
+                .background(
+                    GeometryReader { geo in
+                        Color.clear.preference(
+                            key: LiveTranscriptBottomPreferenceKey.self,
+                            value: geo.frame(in: .named("recordScroll")).minY
+                        )
+                    }
+                )
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, minHeight: 220, alignment: .topLeading)
+        .background(background)
+        .onChange(of: words) { _, updatedWords in
+            guard !updatedWords.isEmpty else { return }
+            restartHighlight(for: updatedWords)
         }
     }
 
@@ -33,24 +48,6 @@ struct LiveTranscriptView: View {
                 .foregroundColor(.secondary)
 
             Spacer()
-        }
-    }
-
-    private var transcriptScroller: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                transcriptText
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 4)
-                    .id(transcriptKey)
-            }
-            .onChange(of: words) { _, updatedWords in
-                guard !updatedWords.isEmpty else { return }
-                restartHighlight(for: updatedWords)
-                withAnimation(.easeOut(duration: 0.22)) {
-                    proxy.scrollTo(transcriptKey, anchor: .bottom)
-                }
-            }
         }
     }
 
@@ -80,10 +77,6 @@ struct LiveTranscriptView: View {
         + Text(lastWord)
             .font(.app(isHighlighted ? .bold : .medium, size: isHighlighted ? 30 : 24))
             .foregroundColor(isHighlighted ? .primary : .primary.opacity(0.78))
-    }
-
-    private var transcriptKey: String {
-        words.joined(separator: " ")
     }
 
     private var currentWordKey: String {
@@ -121,5 +114,47 @@ struct LiveTranscriptView: View {
     private var background: some View {
         RoundedRectangle(cornerRadius: AppTheme.cornerRadius, style: .continuous)
             .fill(colorScheme == .dark ? Color.white.opacity(0.07) : Color.black.opacity(0.045))
+    }
+}
+
+struct LivePreviewHintView: View {
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "sparkles")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundColor(.primary)
+                .padding(.top, 1)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Live preview")
+                    .font(.app(.semibold, size: 13))
+                Text("This may look rough as you talk. After you stop, you’ll get the full transcript with speakers labeled.")
+                    .font(.app(.regular, size: 13))
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: AppTheme.smallRadius, style: .continuous)
+                .fill(colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.05))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: AppTheme.smallRadius, style: .continuous)
+                .stroke(AppTheme.cardStroke, lineWidth: 1)
+        )
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Live preview. This may look rough as you talk. After you stop, you’ll get the full transcript with speakers labeled.")
+    }
+}
+
+struct LiveTranscriptBottomPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }

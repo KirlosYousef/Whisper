@@ -60,7 +60,6 @@ struct SettingsView: View {
                         SettingsRow(
                             iconName: "person.3.fill",
                             title: "Identify speakers",
-                            subtitle: "Label everyone who spoke after each recording, however many people. You can rename them later.",
                             trailingView: Toggle("", isOn: $store.identifySpeakers)
                                 .tint(Color.accentColor),
                             hasChevron: false)

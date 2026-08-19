@@ -99,6 +99,12 @@ public class SummaryService {
            let rootViewController = window.rootViewController {
             DispatchQueue.main.async {
                 rootViewController.present(activityVC, animated: true)
+                activityVC.completionWithItemsHandler = { _, completed, _, _ in
+                    guard completed else { return }
+                    Task { @MainActor in
+                        LovePromptManager.shared.noteShareOrExport(delay: 0.6)
+                    }
+                }
             }
         }
     }
@@ -111,10 +117,16 @@ public class SummaryService {
            let rootViewController = window.rootViewController {
             DispatchQueue.main.async {
                 rootViewController.present(activityVC, animated: true)
+                activityVC.completionWithItemsHandler = { _, completed, _, _ in
+                    guard completed else { return }
+                    Task { @MainActor in
+                        LovePromptManager.shared.noteShareOrExport(delay: 0.6)
+                    }
+                }
             }
         }
     }
-    
+
     public static func exportString(for recording: Recording, format: ExportFormat) -> String {
         switch format {
         case .text:

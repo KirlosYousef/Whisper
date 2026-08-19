@@ -158,6 +158,7 @@ struct AskActionSheet: View {
                         alertMessage = "Copied to clipboard"
                         showAlert = true
                         HapticsManager.shared.notification(.success)
+                        LovePromptManager.shared.noteShareOrExport(delay: 0.8)
                     } label: {
                         Label("Copy", systemImage: "doc.on.doc")
                     }
@@ -169,6 +170,9 @@ struct AskActionSheet: View {
                         Label("Share", systemImage: "square.and.arrow.up")
                     }
                     .font(.app(.regular, size: 14))
+                    .simultaneousGesture(TapGesture().onEnded {
+                        LovePromptManager.shared.noteShareOrExport(delay: 2.0)
+                    })
                 }
                 .padding(.top, 2)
             }

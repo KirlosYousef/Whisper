@@ -8,6 +8,9 @@ struct RecordScreen: View {
     @State private var docked = false
     @State private var playingSegmentId: UUID? = nil
     @State private var focusedSpeakerKey: String? = nil
+    @State private var followLiveTranscript = true
+    @State private var isProgrammaticLiveScroll = false
+    @State private var liveScrollViewportHeight: CGFloat = 0
     
     var body: some View {
 		ZStack {
@@ -27,6 +30,7 @@ struct RecordScreen: View {
 		.navigationTitle("Record")
 		.onChange(of: viewModel.isRecording) { _, newValue in
 			if newValue {
+				followLiveTranscript = true
 				withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
 					docked = true
 				}
@@ -108,6 +112,9 @@ struct RecordScreen: View {
                 color: viewModel.isRealtimeConnected ? .green : .orange
             )
         }
+        if shouldShowLivePreviewHint {
+            LivePreviewHintView()
+        }
         if let rec = viewModel.activeRecording,
            rec.speakerStatus == .failed,
            !viewModel.isRecording {
@@ -123,6 +130,11 @@ struct RecordScreen: View {
             }
             .buttonStyle(.plain)
         }
+    }
+
+    private var shouldShowLivePreviewHint: Bool {
+        viewModel.isRecording &&
+        viewModel.activeRecording.map { shouldShowLiveTranscript(for: $0) } == true
     }
     
     @ViewBuilder
@@ -188,6 +200,47 @@ struct RecordScreen: View {
                 }
                 // Keep bottom content visible above mic and translation chip
                 .padding(.bottom, docked ? 220 : 120)
+            }
+            .coordinateSpace(name: "recordScroll")
+            .background(
+                GeometryReader { geo in
+                    Color.clear
+                        .onAppear { liveScrollViewportHeight = geo.size.height }
+                        .onChange(of: geo.size.height) { _, height in
+                            liveScrollViewportHeight = height
+                        }
+                }
+            )
+            .onChange(of: viewModel.liveTranscript) { _, _ in
+                scrollLiveTranscriptToEnd(using: proxy)
+            }
+            .onChange(of: viewModel.liveTranscriptWords.count) { _, _ in
+                scrollLiveTranscriptToEnd(using: proxy)
+            }
+            .onPreferenceChange(LiveTranscriptBottomPreferenceKey.self) { minY in
+                updateLiveTranscriptFollow(bottomMinY: minY)
+            }
+            .overlay(alignment: .bottom) {
+                if viewModel.isRecording, shouldShowLiveTranscript(for: rec), !followLiveTranscript {
+                    Button {
+                        followLiveTranscript = true
+                        scrollLiveTranscriptToEnd(using: proxy, force: true)
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "arrow.down")
+                                .font(.system(size: 12, weight: .semibold))
+                            Text("Jump to live")
+                                .font(.app(.semibold, size: 13))
+                        }
+                        .foregroundColor(colorScheme == .dark ? .black : .white)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(Color.primary, in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.bottom, docked ? 8 : 4)
+                    .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                }
             }
             }
         }
@@ -266,6 +319,29 @@ struct RecordScreen: View {
             }
         )
         .card()
+    }
+
+    private func scrollLiveTranscriptToEnd(using proxy: ScrollViewProxy, force: Bool = false) {
+        guard viewModel.isRecording else { return }
+        guard force || followLiveTranscript else { return }
+        isProgrammaticLiveScroll = true
+        withAnimation(.easeOut(duration: 0.22)) {
+            proxy.scrollTo("live-transcript-end", anchor: .bottom)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.28) {
+            isProgrammaticLiveScroll = false
+        }
+    }
+
+    private func updateLiveTranscriptFollow(bottomMinY: CGFloat) {
+        guard viewModel.isRecording, liveScrollViewportHeight > 0 else { return }
+        guard !isProgrammaticLiveScroll else { return }
+        let isNearBottom = bottomMinY < liveScrollViewportHeight + 72
+        if isNearBottom != followLiveTranscript {
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
+                followLiveTranscript = isNearBottom
+            }
+        }
     }
 
     private func shouldShowLiveTranscript(for recording: Recording) -> Bool {
