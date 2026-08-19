@@ -133,7 +133,7 @@ public class SummaryService {
                 lines.append("\nAction Items:")
                 lines.append(contentsOf: todos.map { "- \($0)" })
             }
-            lines.append("\nTranscript:\n\(recording.fullTranscript)")
+            lines.append("\nTranscript:\n\(transcriptExportBody(for: recording, markdown: false))")
             return lines.joined(separator: "\n")
         case .markdown:
             let title = recording.title?.isEmpty == false ? recording.title! : "Recording"
@@ -150,9 +150,28 @@ public class SummaryService {
                 md += "\n## Action Items\n"
                 for t in todos { md += "- \(t)\n" }
             }
-            md += "\n## Transcript\n\(recording.fullTranscript)\n"
+            md += "\n## Transcript\n\(transcriptExportBody(for: recording, markdown: true))\n"
             return md
         }
+    }
+
+    public static func transcriptExportBody(for recording: Recording, markdown: Bool) -> String {
+        let segs = recording.sortedSegments.filter {
+            $0.status == "completed" && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        guard segs.contains(where: { !($0.speakerKey?.isEmpty ?? true) }) else {
+            return recording.fullTranscript
+        }
+        return segs.map { segment in
+            let name = recording.displayName(for: segment.speakerKey ?? "")
+            let start = segment.playbackStart
+            let end = segment.playbackEnd > start ? segment.playbackEnd : recording.duration
+            let range = SpeakerTimeFormatting.compactRange(start, end)
+            if markdown {
+                return "**\(name)** (\(range))\n\(segment.text.trimmingCharacters(in: .whitespacesAndNewlines))"
+            }
+            return "\(name) (\(range))\n\(segment.text.trimmingCharacters(in: .whitespacesAndNewlines))"
+        }.joined(separator: "\n\n")
     }
     
     public static func generateSummary(for transcript: String) async -> (summary: String, todos: [String]) {
@@ -239,12 +258,12 @@ public class SummaryService {
         request.timeoutInterval = 30.0 // Add explicit timeout
         
         let prompt = """
-        You are a precise assistant. Read the transcript and produce STRICT JSON with keys 'summary' (string) and 'todos' (array of strings). Do not include any extra keys or prose.\n\nTranscript:\n\n\(truncatedTranscript)
+        You are a precise assistant. Read the transcript and produce STRICT JSON with keys 'summary' (string) and 'todos' (array of strings). Do not include any extra keys or prose. If the transcript includes speaker labels or names, attribute statements to those speakers when relevant (for example, "Kirlos asked…").\n\nTranscript:\n\n\(truncatedTranscript)
         """
         let body: [String: Any] = [
             "model": model,
             "messages": [
-                ["role": "system", "content": "You are a helpful assistant that summarizes transcripts and extracts action items."],
+                ["role": "system", "content": "You are a helpful assistant that summarizes transcripts and extracts action items. When speaker names or labels are present, mention who said or asked things when it improves the summary. Keep the JSON contract: keys 'summary' (string) and 'todos' (array of strings)."],
                 ["role": "user", "content": prompt]
             ],
             "temperature": 0.3,
@@ -404,7 +423,7 @@ private extension SummaryService {
         request.timeoutInterval = 30.0
         
         let system = """
-        You operate on a conversation transcript. Perform the requested task (e.g., summarize, extract action items, extract keywords, translate, reformat, or answer questions) using ONLY the transcript. Respond concisely in plain text suitable for sharing. Avoid disclaimers.
+        You operate on a conversation transcript. Perform the requested task (e.g., summarize, extract action items, extract keywords, translate, reformat, or answer questions) using ONLY the transcript. If speaker names or labels are present, use them when attributing statements. Respond concisely in plain text suitable for sharing. Avoid disclaimers.
         """
         let user = """
         Transcript:
@@ -526,6 +545,7 @@ private extension SummaryService {
         
         let system = """
         You answer questions strictly using the provided transcript. \
+        If speaker names or labels are present, you may refer to them. \
         If the answer is not clearly present, reply with: \"Not found in transcript.\" \
         Be concise (<= 2 sentences).
         """

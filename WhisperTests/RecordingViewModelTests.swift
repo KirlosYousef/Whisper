@@ -7,7 +7,7 @@
 
 import XCTest
 import SwiftData
-@testable import Whisper
+@testable import Revera_AI
 
 final class RecordingViewModelTests: XCTestCase {
     var viewModel: RecordingViewModel!
@@ -42,7 +42,8 @@ final class RecordingViewModelTests: XCTestCase {
         // Given
         let recording1 = Recording(createdAt: Date(), duration: 60.0, filePath: "/path1")
         let recording2 = Recording(createdAt: Date().addingTimeInterval(-3600), duration: 120.0, filePath: "/path2")
-        
+        modelContext.insert(recording1)
+        modelContext.insert(recording2)
         try modelContext.save()
         
         // When
@@ -56,12 +57,16 @@ final class RecordingViewModelTests: XCTestCase {
         // Given
         let recording1 = Recording(createdAt: Date(), duration: 60.0, filePath: "/path1")
         let recording2 = Recording(createdAt: Date().addingTimeInterval(-3600), duration: 120.0, filePath: "/path2")
+        modelContext.insert(recording1)
+        modelContext.insert(recording2)
         
         let segment1 = TranscriptionSegment(text: "Hello world", status: "completed", timestamp: 0.0)
         segment1.recording = recording1
+        modelContext.insert(segment1)
         
         let segment2 = TranscriptionSegment(text: "Goodbye", status: "completed", timestamp: 0.0)
         segment2.recording = recording2
+        modelContext.insert(segment2)
         
         try modelContext.save()
         
@@ -77,42 +82,58 @@ final class RecordingViewModelTests: XCTestCase {
     func testAudioLevelUpdate() throws {
         // Given
         let expectedLevel: Float = 0.75
+        let exp = expectation(description: "audio level")
         
         // When
         viewModel.audioService(viewModel.audioService, didUpdateAudioLevel: expectedLevel)
         
         // Then
-        XCTAssertEqual(viewModel.audioLevel, expectedLevel)
+        DispatchQueue.main.async {
+            XCTAssertEqual(self.viewModel.audioLevel, expectedLevel)
+            exp.fulfill()
+        }
+        wait(for: [exp], timeout: 1.0)
     }
     
     func testInterruptionHandling() throws {
         // Given
         let interruptionReason = "Phone call"
+        let exp = expectation(description: "interrupt")
         
         // When
         viewModel.audioService(viewModel.audioService, didInterruptRecording: interruptionReason)
         
         // Then
-        XCTAssertTrue(viewModel.isInterrupted)
-        XCTAssertEqual(viewModel.interruptionMessage, interruptionReason)
+        DispatchQueue.main.async {
+            XCTAssertTrue(self.viewModel.isInterrupted)
+            XCTAssertEqual(self.viewModel.interruptionMessage, interruptionReason)
+            exp.fulfill()
+        }
+        wait(for: [exp], timeout: 1.0)
     }
     
     func testResumeRecording() throws {
         // Given
         viewModel.isInterrupted = true
         viewModel.interruptionMessage = "Test interruption"
+        let exp = expectation(description: "resume")
         
         // When
         viewModel.audioService(viewModel.audioService, didResumeRecording: true)
         
         // Then
-        XCTAssertFalse(viewModel.isInterrupted)
-        XCTAssertNil(viewModel.interruptionMessage)
+        DispatchQueue.main.async {
+            XCTAssertFalse(self.viewModel.isInterrupted)
+            XCTAssertNil(self.viewModel.interruptionMessage)
+            exp.fulfill()
+        }
+        wait(for: [exp], timeout: 1.0)
     }
     
     func testRefreshRecordings() throws {
         // Given
         let recording = Recording(createdAt: Date(), duration: 60.0, filePath: "/test/path")
+        modelContext.insert(recording)
         try modelContext.save()
         
         // When

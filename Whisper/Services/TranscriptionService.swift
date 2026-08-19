@@ -205,6 +205,130 @@ class TranscriptionService {
         }
         task.resume()
     }
+
+    func diarize(audioURL: URL, completion: @escaping (Result<DiarizationResult, Error>) -> Void) {
+        guard apiKey != OpenAIConfiguration.placeholderAPIKey && !apiKey.isEmpty else {
+            completion(.failure(TranscriptionError.apiKeyNotConfigured))
+            return
+        }
+        diarizeWithRetry(audioURL: audioURL, retryCount: 0, completion: completion)
+    }
+
+    static func parseDiarizedJSON(_ data: Data) throws -> DiarizationResult {
+        try SpeakerDiarizationParser.parse(data)
+    }
+
+    static func mergeAdjacentTurns(_ turns: [DiarizedTurn], gap: TimeInterval = 0.4) -> [DiarizedTurn] {
+        SpeakerDiarizationParser.mergeAdjacentTurns(turns, gap: gap)
+    }
+
+    private func diarizeWithRetry(audioURL: URL, retryCount: Int, completion: @escaping (Result<DiarizationResult, Error>) -> Void) {
+        diarizeWithOpenAI(audioURL: audioURL) { [weak self] result in
+            guard let self else { return }
+
+            if case .failure(let error) = result, self.isRetryable(error), retryCount < self.maxRetries {
+                let base = TimeInterval(pow(2.0, Double(retryCount)))
+                let jitter = Double.random(in: 0...0.5)
+                let delay = min(30.0, base + jitter)
+                DispatchQueue.global().asyncAfter(deadline: .now() + delay) {
+                    self.diarizeWithRetry(audioURL: audioURL, retryCount: retryCount + 1, completion: completion)
+                }
+                return
+            }
+
+            completion(result)
+        }
+    }
+
+    private func diarizeWithOpenAI(audioURL: URL, completion: @escaping (Result<DiarizationResult, Error>) -> Void) {
+        guard apiKey != OpenAIConfiguration.placeholderAPIKey && !apiKey.isEmpty else {
+            completion(.failure(TranscriptionError.apiKeyNotConfigured))
+            return
+        }
+
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        let boundary = "Boundary-\(UUID().uuidString)"
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 120
+
+        var body = Data()
+        func appendField(name: String, value: String) {
+            body.append("--\(boundary)\r\n")
+            body.append("Content-Disposition: form-data; name=\"\(name)\"\r\n\r\n")
+            body.append("\(value)\r\n")
+        }
+
+        let filename = audioURL.lastPathComponent
+        guard let fileData = try? Data(contentsOf: audioURL), !fileData.isEmpty else {
+            completion(.failure(TranscriptionError.invalidResponse))
+            return
+        }
+
+        body.append("--\(boundary)\r\n")
+        body.append("Content-Disposition: form-data; name=\"file\"; filename=\"\(filename)\"\r\n")
+        body.append("Content-Type: audio/wav\r\n\r\n")
+        body.append(fileData)
+        body.append("\r\n")
+        appendField(name: "model", value: OpenAIConfiguration.diarizationModel)
+        appendField(name: "response_format", value: "diarized_json")
+        appendField(name: "chunking_strategy", value: "auto")
+
+        let languageHints = preferredLanguages.filter { !$0.isEmpty && $0.lowercased() != "auto" }
+        if let language = languageHints.first {
+            appendField(name: "language", value: language)
+        }
+
+        body.append("--\(boundary)--\r\n")
+        request.httpBody = body
+
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 120
+        config.timeoutIntervalForResource = 300
+        let session = URLSession(configuration: config)
+
+        let task = session.dataTask(with: request) { data, response, error in
+            if let error {
+                completion(.failure(error))
+                return
+            }
+
+            if let httpResponse = response as? HTTPURLResponse {
+                if httpResponse.statusCode == 429 {
+                    completion(.failure(TranscriptionError.rateLimited))
+                    return
+                } else if httpResponse.statusCode >= 500 {
+                    completion(.failure(TranscriptionError.serverError))
+                    return
+                } else if httpResponse.statusCode >= 400 {
+                    if let data,
+                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                       let err = json["error"] as? [String: Any],
+                       let message = err["message"] as? String {
+                        completion(.failure(NSError(domain: "TranscriptionService", code: httpResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: message])))
+                        return
+                    }
+                    completion(.failure(TranscriptionError.invalidResponse))
+                    return
+                }
+            }
+
+            guard let data else {
+                completion(.failure(TranscriptionError.invalidResponse))
+                return
+            }
+
+            do {
+                let parsed = try Self.parseDiarizedJSON(data)
+                let merged = Self.mergeAdjacentTurns(parsed.turns)
+                completion(.success(DiarizationResult(duration: parsed.duration, text: parsed.text, turns: merged)))
+            } catch {
+                completion(.failure(error))
+            }
+        }
+        task.resume()
+    }
 }
 
 // MARK: - Error Types

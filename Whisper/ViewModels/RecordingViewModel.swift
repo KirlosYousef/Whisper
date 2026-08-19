@@ -11,6 +11,7 @@ import SwiftData
 import Combine
 import SwiftUI
 import Network
+import UIKit
 
 class NetworkMonitor {
     static let shared = NetworkMonitor()
@@ -65,7 +66,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     // Session-scoped translation language shared across tabs (resets on app relaunch)
     @Published var sessionTranslationLanguage: String = Languages.autoCode
     
-    private var audioService: AudioService
+    var audioService: AudioService
     private var modelContext: ModelContext
     private var transcriptionService: TranscriptionService
     private var realtimeTranscriptionService: RealtimeTranscriptionService
@@ -78,6 +79,8 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     private var realtimeFlushDebounceWorkItem: DispatchWorkItem?
     private var isWaitingForRealtimeFlush = false
     private var inFlightSegmentTranscriptions: Set<UUID> = []
+    private var inFlightSpeakerIdentification: Set<UUID> = []
+    @Published private(set) var identifyingSpeakerRecordingIds: Set<UUID> = []
     private var cancellables = Set<AnyCancellable>()
     private let networkMonitor = NetworkMonitor.shared
     
@@ -95,9 +98,6 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     }
     
     init(modelContext: ModelContext) {
-        // #region agent log
-        DebugSessionLog.write(hypothesisId: "H7", location: "RecordingViewModel.swift:init", message: "RecordingViewModel init start", data: [:])
-        // #endregion
         self.modelContext = modelContext
         self.audioService = AudioService()
         self.transcriptionService = TranscriptionService()
@@ -116,6 +116,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
             ])
             if online {
                 self.processQueuedTranscriptions()
+                self.processPendingSpeakerIdentifications()
             }
         }
         self.isOnline = networkMonitor.isOnline
@@ -191,14 +192,6 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                 scheduleRealtimeFlushDebounce()
             }
         case .failed(let message):
-            // #region agent log
-            DebugSessionLog.write(hypothesisId: "H2", location: "RecordingViewModel.swift:handleRealtimeEvent.failed", message: "Realtime failed UI path", data: [
-                "error": message,
-                "alreadyFallback": isRealtimeFallbackActive,
-                "isRecording": isRecording,
-                "liveTranscriptLength": liveTranscript.count
-            ])
-            // #endregion
             isRealtimeConnected = false
             isRealtimeFallbackActive = true
             hidesSegmentRowsDuringRealtime = false
@@ -318,12 +311,55 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     }
 
     func usesFullTranscriptDisplay(for recording: Recording) -> Bool {
+        if usesSpeakerTurnDisplay(for: recording) { return false }
         if activeRecording?.id == recording.id {
             return activeTranscriptionMode == .realtimeOpenAI && !isRealtimeFallbackActive
         }
 
         return recording.transcriptionModeRawValue == TranscriptionMode.realtimeOpenAI.rawValue ||
             hasLegacyRealtimeMicroSegments(for: recording)
+    }
+
+    func usesSpeakerTurnDisplay(for recording: Recording) -> Bool {
+        if isRecording, activeRecording?.id == recording.id {
+            return false
+        }
+        return recording.hasSpeakerLabels
+    }
+
+    func isIdentifyingSpeakers(for recording: Recording) -> Bool {
+        identifyingSpeakerRecordingIds.contains(recording.id) || recording.speakerStatus == .processing
+    }
+
+    /// After stop, hide unlabeled text and show progress until speaker turns are ready.
+    func isBuildingSpeakerTranscript(for recording: Recording) -> Bool {
+        if isRecording, activeRecording?.id == recording.id {
+            return false
+        }
+        if isWaitingForRealtimeFlush, activeRecording?.id == recording.id {
+            return false
+        }
+        if recording.hasSpeakerLabels {
+            return false
+        }
+        if identifyingSpeakerRecordingIds.contains(recording.id) {
+            return true
+        }
+        switch recording.speakerStatus {
+        case .pending, .processing:
+            return true
+        default:
+            return false
+        }
+    }
+
+    func canIdentifySpeakers(for recording: Recording) -> Bool {
+        switch recording.speakerStatus {
+        case .skipped, .failed, .pending:
+            return true
+        case .processing, .completed:
+            return false
+        }
     }
 
     func transcriptWords(for recording: Recording) -> [String] {
@@ -377,26 +413,14 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
             return
         }
 
-        let emptyProcessing = segments.filter { $0.status == "processing" && $0.text.isEmpty }.count
-        // #region agent log
-        DebugSessionLog.write(hypothesisId: "H5", location: "RecordingViewModel.swift:completeEmptyRealtimeSegments", message: "Marking empty realtime segments completed", data: [
-            "emptyProcessingCount": emptyProcessing,
-            "totalSegments": segments.count,
-            "liveTranscriptLength": liveTranscript.count,
-            "recordingDuration": recording.duration
-        ])
-        // #endregion
+        let emptyProcessing = segments.filter { $0.status == "processing" && $0.text.isEmpty }
+        guard !emptyProcessing.isEmpty else { return }
 
-        var changed = false
-        for segment in segments where segment.status == "processing" && segment.text.isEmpty {
-            segment.status = "completed"
-            changed = true
+        for segment in emptyProcessing {
+            segment.status = "failed"
         }
-
-        if changed {
-            try? modelContext.save()
-            fetchRecordings()
-        }
+        try? modelContext.save()
+        fetchRecordings()
     }
     
     func startRecording() {
@@ -414,14 +438,6 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         let requestedMode = preRecordingTranscriptionMode
         let canUseRealtime = requestedMode == .realtimeOpenAI && isOnline && realtimeTranscriptionService.isConfigured
         activeTranscriptionMode = canUseRealtime ? .realtimeOpenAI : .segments20s
-        // #region agent log
-        DebugSessionLog.write(hypothesisId: "H5", location: "RecordingViewModel.swift:startRecording", message: "Recording start mode", data: [
-            "requestedMode": requestedMode.rawValue,
-            "canUseRealtime": canUseRealtime,
-            "isOnline": isOnline,
-            "activeMode": activeTranscriptionMode.rawValue
-        ])
-        // #endregion
         resetLiveTranscript()
         clearErrorMessage()
         transcriptionService.preferredLanguages = transcriptionLanguageHints()
@@ -447,7 +463,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                     self.isPaused = false
                     // Capture the effective target translation language for this session
                     let effective = self.sessionTranslationLanguage
-                    self.activeTargetTranslationLanguage = (effective.lowercased() == "auto") ? nil : effective
+                    self.activeTargetTranslationLanguage = Languages.translationTarget(from: effective)
                     // Create a new Recording for this session
                     let rec = Recording(
                         duration: 0,
@@ -455,6 +471,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                         title: nil,
                         transcriptionModeRawValue: self.activeTranscriptionMode.rawValue
                     )
+                    rec.speakerStatus = self.settingsStore.identifySpeakers ? .pending : .skipped
                     self.modelContext.insert(rec)
                     self.activeRecording = rec
                     self.recordings.insert(rec, at: 0)
@@ -507,24 +524,17 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                     self.beginRealtimeStopFlush()
                 } else if let rec = self.activeRecording {
                     self.ensurePendingSegmentsAreQueuedAfterStop(for: rec)
+                    self.maybeIdentifySpeakersAfterTranscription(for: rec)
                 }
                 
                 if let rec = self.activeRecording {
+                    if let filePath, AudioService.isUsableAudioFile(at: filePath) || FileManager.default.fileExists(atPath: filePath) {
+                        rec.filePath = filePath
+                    }
                     if let duration, duration > rec.duration {
                         rec.duration = duration
                     }
                     let segmentCount = self.segments(for: rec).count
-                    // #region agent log
-                    DebugSessionLog.write(hypothesisId: "H3", location: "RecordingViewModel.swift:stopRecording", message: "Recording stopped", data: [
-                        "audioServiceDuration": duration ?? -1,
-                        "storedDuration": rec.duration,
-                        "segmentCount": segmentCount,
-                        "liveTranscriptLength": self.liveTranscript.count,
-                        "mode": self.activeTranscriptionMode.rawValue,
-                        "fallbackActive": self.isRealtimeFallbackActive,
-                        "willDisconnectInMs": self.activeTranscriptionMode == .realtimeOpenAI ? 6000 : 0
-                    ])
-                    // #endregion
                     AnalyticsService.shared.trackEvent("Recording Stopped", properties: [
                         "recording_duration": rec.duration,
                         "segment_count": segmentCount,
@@ -573,21 +583,18 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         persistLiveTranscriptIfNeeded()
         realtimeTranscriptionService.disconnect()
         if let rec = activeRecording {
-            transcribeRealtimeRecordingIfNeeded(rec)
+            if settingsStore.identifySpeakers, AudioService.isUsableAudioFile(at: rec.filePath) {
+                identifySpeakersIfNeeded(for: rec)
+            } else {
+                transcribeRealtimeRecordingIfNeeded(rec)
+            }
         }
     }
 
     private func transcribeRealtimeRecordingIfNeeded(_ recording: Recording) {
         let url = URL(fileURLWithPath: recording.filePath)
         let fileSize = (try? FileManager.default.attributesOfItem(atPath: recording.filePath)[.size] as? NSNumber)?.intValue ?? 0
-        // #region agent log
-        DebugSessionLog.write(hypothesisId: "H5", location: "RecordingViewModel.swift:transcribeRealtimeRecordingIfNeeded", message: "Transcribing saved WAV after realtime stop", data: [
-            "fileSize": fileSize,
-            "duration": recording.duration,
-            "fileExists": FileManager.default.fileExists(atPath: recording.filePath)
-        ])
-        // #endregion
-
+        
         guard FileManager.default.fileExists(atPath: recording.filePath), fileSize > 1000 else {
             realtimeStatusText = nil
             setErrorMessage("Nothing was captured. Please try recording again.")
@@ -744,17 +751,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         }
         // Update duration
         rec.duration += duration
-        // #region agent log
-        DebugSessionLog.write(hypothesisId: "H4", location: "RecordingViewModel.swift:didFinishSegment", message: "Segment finished duration update", data: [
-            "addedDuration": duration,
-            "storedDurationAfter": rec.duration,
-            "startTime": startTime,
-            "mode": activeTranscriptionMode.rawValue,
-            "realtimeSkipTranscribe": activeTranscriptionMode == .realtimeOpenAI && !isRealtimeFallbackActive,
-            "isRecording": isRecording
-        ])
-        // #endregion
-
+        
         if activeTranscriptionMode == .realtimeOpenAI && !isRealtimeFallbackActive {
             rec.filePath = url.path
             AnalyticsService.shared.trackEvent("Realtime Audio Segment Saved", properties: [
@@ -848,13 +845,6 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
             }
         } else if let text {
             clearErrorMessage()
-            // #region agent log
-            DebugSessionLog.write(hypothesisId: "H5", location: "RecordingViewModel.swift:applyTranscriptionResult", message: "File transcription finished", data: [
-                "textLength": text.count,
-                "duration": duration,
-                "isEmpty": text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ])
-            // #endregion
             AnalyticsService.shared.trackEvent("Transcription Completed", properties: [
                 "segment_duration": duration,
                 "text_length": text.count,
@@ -869,6 +859,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                     try? self.modelContext.save()
                     self.fetchRecordings()
                     self.attemptAutoSummarizeIfComplete(for: rec)
+                    self.maybeIdentifySpeakersAfterTranscription(for: rec)
                 }
             } else {
                 Task { @MainActor in
@@ -878,6 +869,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                     try? self.modelContext.save()
                     self.fetchRecordings()
                     self.attemptAutoSummarizeIfComplete(for: rec)
+                    self.maybeIdentifySpeakersAfterTranscription(for: rec)
                 }
             }
         }
@@ -886,6 +878,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
             try? modelContext.save()
             fetchRecordings()
             attemptAutoSummarizeIfComplete(for: rec)
+            maybeIdentifySpeakersAfterTranscription(for: rec)
         }
     }
     
@@ -900,6 +893,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         isRefreshing = true
         fetchRecordings()
         processQueuedTranscriptions()
+        processPendingSpeakerIdentifications()
         
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
             self.isRefreshing = false
@@ -931,17 +925,16 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                                 self?.setErrorMessage("Transcription failed: \(error.localizedDescription)")
                             } else if let text = text {
                                 self?.clearErrorMessage()
-                                // Use default translation language for queued items
-                                let defaultLang = SettingsStore().defaultTranslationLanguage
-                                if !defaultLang.isEmpty && defaultLang.lowercased() != "auto" {
+                                if let target = Languages.translationTarget(from: self?.sessionTranslationLanguage ?? Languages.autoCode) {
                                     Task { @MainActor in
-                                        let translated = await SummaryService.translate(text: text, to: defaultLang)
+                                        let translated = await SummaryService.translate(text: text, to: target)
                                         segment.status = "completed"
                                         segment.text = translated
                                         try? self?.modelContext.save()
                                         self?.fetchRecordings()
                                         if let rec = segment.recording {
                                             self?.attemptAutoSummarizeIfComplete(for: rec)
+                                            self?.maybeIdentifySpeakersAfterTranscription(for: rec)
                                         }
                                     }
                                 } else {
@@ -953,6 +946,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                             self?.fetchRecordings()
                             if let rec = segment.recording {
                                 self?.attemptAutoSummarizeIfComplete(for: rec)
+                                self?.maybeIdentifySpeakersAfterTranscription(for: rec)
                             }
                         }
                     }
@@ -976,6 +970,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         try? modelContext.save()
         fetchRecordings()
         processQueuedTranscriptions()
+        maybeIdentifySpeakersAfterTranscription(for: recording)
     }
     
     func checkNetworkStatus() {
@@ -987,6 +982,12 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     private func attemptAutoSummarizeIfComplete(for recording: Recording) {
         // Only summarize after recording session is stopped
         guard !isRecording else { return }
+        if recording.speakerStatus == .pending || recording.speakerStatus == .processing {
+            return
+        }
+        if recording.speakerStatus == .pending || recording.speakerStatus == .processing {
+            return
+        }
         // Avoid re-generating if we already have a non-empty summary
         if let existing = recording.summary, !existing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return
@@ -1038,11 +1039,18 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
             return recordings
         } else {
             return recordings.filter { recording in
-                // Search in transcription segments
                 let segments = fetchSegments(for: recording) ?? []
-                return segments.contains { segment in
-                    segment.text.localizedCaseInsensitiveContains(searchText)
+                if segments.contains(where: { $0.text.localizedCaseInsensitiveContains(searchText) }) {
+                    return true
                 }
+                let names = recording.speakerKeysInAppearanceOrder().map { recording.displayName(for: $0) }
+                if names.contains(where: { $0.localizedCaseInsensitiveContains(searchText) }) {
+                    return true
+                }
+                if recording.title?.localizedCaseInsensitiveContains(searchText) == true {
+                    return true
+                }
+                return false
             }
         }
     }
@@ -1074,6 +1082,303 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         guard let allSegments = try? modelContext.fetch(FetchDescriptor<TranscriptionSegment>()) else { return nil }
         return allSegments.filter { $0.recording?.id == recording.id }
     }
+
+    // MARK: - Speaker identification
+
+    func retrySpeakerIdentification(for recording: Recording) {
+        identifySpeakersIfNeeded(for: recording, manualRetry: true)
+    }
+
+    func resumeInterruptedSpeakerIdentification(for recording: Recording) {
+        guard recording.speakerStatus == .processing || recording.speakerStatus == .pending else { return }
+        guard !inFlightSpeakerIdentification.contains(recording.id) else { return }
+        identifySpeakersIfNeeded(for: recording, manualRetry: true)
+    }
+
+    func identifySpeakersIfNeeded(for recording: Recording, manualRetry: Bool = false) {
+        if isRecording, activeRecording?.id == recording.id {
+            return
+        }
+        guard !inFlightSpeakerIdentification.contains(recording.id) else { return }
+
+        if !settingsStore.identifySpeakers && !manualRetry {
+            skipSpeakerIdentification(for: recording, reason: "off")
+            return
+        }
+
+        if recording.speakerStatus == .completed, recording.hasSpeakerLabels, !manualRetry {
+            return
+        }
+
+        if recording.speakerStatus == .skipped, !manualRetry, settingsStore.identifySpeakers {
+            return
+        }
+
+        guard let sessionURL = ensureSessionWAV(for: recording) else {
+            skipSpeakerIdentification(for: recording, reason: "no_audio")
+            return
+        }
+
+        let fileSize = (try? FileManager.default.attributesOfItem(atPath: sessionURL.path)[.size] as? NSNumber)?.intValue ?? 0
+        if recording.duration < AudioService.minDiarizationDuration || fileSize < AudioService.minDiarizationFileSize {
+            skipSpeakerIdentification(for: recording, reason: "too_short")
+            return
+        }
+
+        guard isOnline else {
+            recording.speakerStatus = .pending
+            try? modelContext.save()
+            fetchRecordings()
+            return
+        }
+
+        withAnimation(.spring(response: 0.5, dampingFraction: 0.88)) {
+            self.inFlightSpeakerIdentification.insert(recording.id)
+            self.identifyingSpeakerRecordingIds.insert(recording.id)
+            recording.speakerStatus = .processing
+            if self.activeRecording?.id == recording.id {
+                self.realtimeStatusText = nil
+            }
+            try? self.modelContext.save()
+            self.fetchRecordings()
+        }
+
+        let duration = recording.duration
+        let mode = recording.transcriptionModeRawValue ?? activeTranscriptionMode.rawValue
+        AnalyticsService.shared.trackEvent("Speakers Identification Started", properties: [
+            "duration": duration,
+            "mode": mode,
+            "file_size": fileSize
+        ])
+
+        var backgroundTask = UIBackgroundTaskIdentifier.invalid
+        backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "SpeakerIdentification") {
+            UIApplication.shared.endBackgroundTask(backgroundTask)
+            backgroundTask = .invalid
+        }
+
+        transcriptionService.diarize(audioURL: sessionURL) { [weak self] result in
+            DispatchQueue.main.async {
+                self?.applyDiarizationResult(
+                    result,
+                    recording: recording,
+                    sessionPath: sessionURL.path,
+                    manualRetry: manualRetry
+                )
+                if backgroundTask != .invalid {
+                    UIApplication.shared.endBackgroundTask(backgroundTask)
+                }
+            }
+        }
+    }
+
+    func processPendingSpeakerIdentifications() {
+        fetchRecordings()
+        for recording in recordings where recording.speakerStatus == .pending {
+            identifySpeakersIfNeeded(for: recording)
+        }
+    }
+
+    private func maybeIdentifySpeakersAfterTranscription(for recording: Recording) {
+        guard !isRecording || activeRecording?.id != recording.id else { return }
+        let segs = segments(for: recording)
+        let hasPending = segs.contains { $0.status == "processing" || $0.status == "queued" }
+        guard !hasPending else { return }
+        identifySpeakersIfNeeded(for: recording)
+    }
+
+    private func skipSpeakerIdentification(for recording: Recording, reason: String) {
+        recording.speakerStatus = .skipped
+        identifyingSpeakerRecordingIds.remove(recording.id)
+        if activeRecording?.id == recording.id, realtimeStatusText == "Identifying speakers…" {
+            realtimeStatusText = nil
+        }
+        try? modelContext.save()
+        fetchRecordings()
+        AnalyticsService.shared.trackEvent("Speakers Identification Skipped", properties: [
+            "reason": reason
+        ])
+        attemptAutoSummarizeIfComplete(for: recording)
+    }
+
+    private func ensureSessionWAV(for recording: Recording) -> URL? {
+        if AudioService.isUsableAudioFile(at: recording.filePath) {
+            return URL(fileURLWithPath: recording.filePath)
+        }
+
+        let chunkURLs = segments(for: recording)
+            .sorted { $0.timestamp < $1.timestamp }
+            .map(\.filePath)
+            .filter { AudioService.isUsableAudioFile(at: $0) }
+            .map { URL(fileURLWithPath: $0) }
+
+        if chunkURLs.count == 1 {
+            recording.filePath = chunkURLs[0].path
+            try? modelContext.save()
+            return chunkURLs[0]
+        }
+
+        guard chunkURLs.count >= 2,
+              let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
+            return nil
+        }
+        let dir = docs.appendingPathComponent("Segments", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let output = dir.appendingPathComponent("\(recording.id.uuidString)-session.wav")
+        do {
+            try AudioService.concatenateWAVFiles(chunkURLs, to: output)
+            if AudioService.isUsableAudioFile(at: output.path) {
+                recording.filePath = output.path
+                try? modelContext.save()
+                return output
+            }
+        } catch {
+            print("RecordingViewModel: session concat failed: \(error)")
+        }
+        return nil
+    }
+
+    private func applyDiarizationResult(
+        _ result: Result<DiarizationResult, Error>,
+        recording: Recording,
+        sessionPath: String,
+        manualRetry: Bool
+    ) {
+        inFlightSpeakerIdentification.remove(recording.id)
+        identifyingSpeakerRecordingIds.remove(recording.id)
+        if activeRecording?.id == recording.id {
+            realtimeStatusText = nil
+        }
+
+        switch result {
+        case .failure(let error):
+            recording.speakerStatus = .failed
+            try? modelContext.save()
+            fetchRecordings()
+            AnalyticsService.shared.trackEvent("Speakers Identification Failed", properties: [
+                "error": error.localizedDescription,
+                "kept_existing_transcript": true
+            ])
+            if activeRecording?.id == recording.id {
+                setErrorMessage("Couldn’t identify speakers. Your transcript was kept.")
+            }
+            attemptAutoSummarizeIfComplete(for: recording)
+
+        case .success(let diarization):
+            let turns = diarization.turns.filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            guard !turns.isEmpty else {
+                recording.speakerStatus = .failed
+                try? modelContext.save()
+                fetchRecordings()
+                AnalyticsService.shared.trackEvent("Speakers Identification Failed", properties: [
+                    "error": "empty_turns",
+                    "kept_existing_transcript": true
+                ])
+                attemptAutoSummarizeIfComplete(for: recording)
+                return
+            }
+
+            let existing = segments(for: recording)
+            withAnimation(.spring(response: 0.52, dampingFraction: 0.86)) {
+                for segment in existing {
+                    modelContext.delete(segment)
+                }
+
+                for turn in turns {
+                    let segment = TranscriptionSegment(
+                        text: turn.text,
+                        status: "completed",
+                        timestamp: turn.start,
+                        filePath: sessionPath,
+                        speakerKey: turn.speakerKey,
+                        startTime: turn.start,
+                        endTime: turn.end,
+                        sessionFilePath: sessionPath,
+                        recording: recording
+                    )
+                    modelContext.insert(segment)
+                }
+
+                recording.filePath = sessionPath
+                recording.speakerCount = Set(turns.map(\.speakerKey)).count
+                recording.speakerStatus = .completed
+                try? modelContext.save()
+                fetchRecordings()
+            }
+
+            let target = translationLanguage(for: recording)
+            let translated = target != nil
+            let duration = recording.duration
+            let speakerCount = recording.speakerCount
+            let turnCount = turns.count
+
+            Task { @MainActor in
+                if let target {
+                    let labeled = self.segments(for: recording)
+                    for segment in labeled {
+                        let translatedText = await SummaryService.translate(text: segment.text, to: target)
+                        if !translatedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            segment.text = translatedText
+                        }
+                    }
+                    try? self.modelContext.save()
+                    self.fetchRecordings()
+                }
+
+                self.assignTitleIfNeeded(to: recording, from: recording.attributedTranscript)
+                try? self.modelContext.save()
+                self.fetchRecordings()
+                AnalyticsService.shared.trackEvent("Speakers Identification Completed", properties: [
+                    "duration": duration,
+                    "speaker_count": speakerCount,
+                    "turn_count": turnCount,
+                    "translated": translated
+                ])
+                self.attemptAutoSummarizeIfComplete(for: recording)
+            }
+        }
+    }
+
+    private func translationLanguage(for recording: Recording) -> String? {
+        if activeRecording?.id == recording.id {
+            return activeTargetTranslationLanguage
+        }
+        return Languages.translationTarget(from: sessionTranslationLanguage)
+    }
+
+    func playbackURL(for segment: TranscriptionSegment) -> URL? {
+        let fm = FileManager.default
+        let candidates = [
+            segment.sessionFilePath,
+            segment.recording?.filePath ?? "",
+            segment.filePath
+        ]
+        for path in candidates where !path.isEmpty && fm.fileExists(atPath: path) {
+            return URL(fileURLWithPath: path)
+        }
+        let originalName = URL(fileURLWithPath: segment.filePath).lastPathComponent
+        if !originalName.isEmpty,
+           let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first {
+            let candidate = docs.appendingPathComponent("Segments", isDirectory: true).appendingPathComponent(originalName)
+            if fm.fileExists(atPath: candidate.path) {
+                return candidate
+            }
+        }
+        return nil
+    }
+
+    func canPlay(_ segment: TranscriptionSegment) -> Bool {
+        playbackURL(for: segment) != nil
+    }
+
+    func saveSpeakerNames(for recording: Recording) {
+        try? modelContext.save()
+        fetchRecordings()
+        AnalyticsService.shared.trackEvent("Speaker Renamed", properties: [
+            "speaker_count": recording.speakerCount
+        ])
+        HapticsManager.shared.notification(.success)
+    }
     
     // MARK: - Playback
     func play(from timestamp: TimeInterval, in recording: Recording) {
@@ -1101,30 +1406,21 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         PlaybackService.shared.playSegment(at: URL(fileURLWithPath: nearest.filePath))
     }
     
-    func play(segment: TranscriptionSegment) {
-        let fm = FileManager.default
-        if !segment.filePath.isEmpty, fm.fileExists(atPath: segment.filePath) {
-            AnalyticsService.shared.trackEvent("Segment Playback Started", properties: [
-                "segment_timestamp": segment.timestamp,
-                "has_text": !segment.text.isEmpty
-            ])
-            clearErrorMessage()
-            PlaybackService.shared.playSegment(at: URL(fileURLWithPath: segment.filePath))
+    func play(segment: TranscriptionSegment, onFinish: (() -> Void)? = nil) {
+        guard let url = playbackURL(for: segment) else {
+            DispatchQueue.main.async { self.setErrorMessage("Audio file not found for this segment.") }
             return
         }
-        // Fallback: look for file under Documents/Segments with same filename
-        let originalName = URL(fileURLWithPath: segment.filePath).lastPathComponent
-        if let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first {
-            let candidate = docs.appendingPathComponent("Segments", isDirectory: true).appendingPathComponent(originalName)
-            if fm.fileExists(atPath: candidate.path) {
-                segment.filePath = candidate.path
-                try? modelContext.save()
-                clearErrorMessage()
-                PlaybackService.shared.playSegment(at: candidate)
-                return
-            }
+        AnalyticsService.shared.trackEvent("Segment Playback Started", properties: [
+            "segment_timestamp": segment.timestamp,
+            "has_text": !segment.text.isEmpty
+        ])
+        clearErrorMessage()
+        if segment.canPlayRangedSession {
+            PlaybackService.shared.play(url: url, start: segment.playbackStart, end: segment.playbackEnd, onFinish: onFinish)
+        } else {
+            PlaybackService.shared.play(url: url, start: 0, end: .greatestFiniteMagnitude, onFinish: onFinish)
         }
-        DispatchQueue.main.async { self.setErrorMessage("Audio file not found for this segment.") }
     }
     
     func clearAllRecordings() {
@@ -1146,9 +1442,20 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     // MARK: - Storage Cleanup
     func cleanupProcessedAudioFiles() {
         guard let allSegments = try? modelContext.fetch(FetchDescriptor<TranscriptionSegment>()) else { return }
+        var protectedPaths = Set<String>()
+        if let recordings = try? modelContext.fetch(FetchDescriptor<Recording>()) {
+            for rec in recordings {
+                if !rec.filePath.isEmpty { protectedPaths.insert(rec.filePath) }
+            }
+        }
+        for seg in allSegments {
+            if !seg.sessionFilePath.isEmpty { protectedPaths.insert(seg.sessionFilePath) }
+        }
+
         var didDelete = false
         var deletedCount = 0
         for seg in allSegments where seg.status == "completed" && !seg.filePath.isEmpty {
+            if protectedPaths.contains(seg.filePath) { continue }
             do {
                 try FileManager.default.removeItem(atPath: seg.filePath)
                 seg.filePath = ""
@@ -1168,3 +1475,11 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         }
     }
 }
+
+
+
+
+
+
+
+

@@ -11,11 +11,17 @@ struct TranslationChip: View {
 	@Binding var language: String
 	let onChange: (String) -> Void
 	@Environment(\.colorScheme) private var colorScheme
+
+	private var labelText: String {
+		Languages.isNoTranslation(language)
+			? Languages.noTranslationDisplay
+			: "Translate to: \(Languages.translationDisplayName(for: language))"
+	}
 	
 	var body: some View {
 		Menu {
 			Picker("Translate to", selection: $language) {
-				Text(Languages.autoDisplay).tag(Languages.autoCode)
+				Text(Languages.noTranslationDisplay).tag(Languages.autoCode)
 				Divider()
 				ForEach(Languages.supported) { lang in
 					Text(lang.name).tag(lang.code)
@@ -23,7 +29,7 @@ struct TranslationChip: View {
 			}
 		} label: {
 			HStack(spacing: 8) {
-				Text("Translate to: \(Languages.displayName(for: language))")
+				Text(labelText)
 					.font(.app(.medium, size: 15))
 					.foregroundColor(colorScheme == .dark ? .white : .black)
 				Image(systemName: "chevron.down")
@@ -39,7 +45,7 @@ struct TranslationChip: View {
 			HapticsManager.shared.selection()
 			onChange(newValue)
 		}
-		.accessibilityLabel(Text("Translate to \(Languages.displayName(for: language))"))
+		.accessibilityLabel(Text(labelText))
 	}
 }
 

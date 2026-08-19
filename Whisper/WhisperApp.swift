@@ -34,7 +34,11 @@ struct WhisperApp: App {
 
     private var shouldShowForcedPaywall: Bool {
         guard !bypassForcedPaywall else { return false }
-        return didFinishLaunch && !paywallManager.isPremium
+        guard didFinishLaunch else { return false }
+        if !paywallManager.hasResolvedPremiumStatus {
+            return !paywallManager.isPremium
+        }
+        return !paywallManager.isPremium
     }
     
     static let sharedModelContainer: ModelContainer = {
@@ -44,26 +48,14 @@ struct WhisperApp: App {
         ])
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
         do {
-            let container = try ModelContainer(for: schema, configurations: [modelConfiguration])
-            // #region agent log
-            DebugSessionLog.write(hypothesisId: "H7", location: "WhisperApp.swift:sharedModelContainer", message: "ModelContainer created", data: [:])
-            // #endregion
-            return container
+            return try ModelContainer(for: schema, configurations: [modelConfiguration])
         } catch {
             fatalError("Could not create ModelContainer: \(error)")
         }
     }()
 
     init() {
-        // #region agent log
-        DebugSessionLog.write(hypothesisId: "H8", location: "WhisperApp.swift:init", message: "App init start", data: [:])
-        // #endregion
         _viewModel = StateObject(wrappedValue: RecordingViewModel(modelContext: WhisperApp.sharedModelContainer.mainContext))
-        // #region agent log
-        DebugSessionLog.write(hypothesisId: "H8", location: "WhisperApp.swift:init", message: "App init finished viewModel", data: [
-            "hasCompletedOnboarding": SettingsStore().hasCompletedOnboarding
-        ])
-        // #endregion
     }
 
     var body: some Scene {
@@ -144,12 +136,6 @@ struct WhisperApp: App {
                     "has_completed_onboarding": settingsStore.hasCompletedOnboarding
                 ])
                 didFinishLaunch = true
-                // #region agent log
-                DebugSessionLog.write(hypothesisId: "H9", location: "WhisperApp.swift:body", message: "Root UI appeared", data: [
-                    "hasCompletedOnboarding": settingsStore.hasCompletedOnboarding,
-                    "isPremium": paywallManager.isPremium
-                ])
-                // #endregion
             }
         }
         .modelContainer(WhisperApp.sharedModelContainer)

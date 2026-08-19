@@ -36,7 +36,8 @@ struct SettingsView: View {
                     Divider().padding(.leading, 64)
                     languageMenuRow(
                         title: "Default Translation",
-                        current: store.defaultTranslationLanguage
+                        current: store.defaultTranslationLanguage,
+                        autoLabel: Languages.noTranslationDisplay
                     ) { newValue in
                         AnalyticsService.shared.trackEvent("Default Translation Language Changed", properties: [
                             "old_language": store.defaultTranslationLanguage,
@@ -47,6 +48,24 @@ struct SettingsView: View {
                     }
                     Divider().padding(.leading, 64)
                     transcriptionModeRow
+                    Divider().padding(.leading, 64)
+                    Button {
+                        let newValue = !store.identifySpeakers
+                        AnalyticsService.shared.trackEvent("Identify Speakers Toggled", properties: [
+                            "enabled": newValue
+                        ])
+                        store.identifySpeakers.toggle()
+                        HapticsManager.shared.selection()
+                    } label: {
+                        SettingsRow(
+                            iconName: "person.3.fill",
+                            title: "Identify speakers",
+                            subtitle: "Label everyone who spoke after each recording, however many people. You can rename them later.",
+                            trailingView: Toggle("", isOn: $store.identifySpeakers)
+                                .tint(Color.accentColor),
+                            hasChevron: false)
+                    }
+                    .buttonStyle(.plain)
                     Divider().padding(.leading, 64)
                     Button {
                         let newValue = !store.hapticsEnabled
@@ -124,6 +143,16 @@ struct SettingsView: View {
                             title: "Privacy Policy"
                         )
                     }
+                    Divider().padding(.leading, 64)
+                    Button {
+                        AnalyticsService.shared.trackEvent("Terms of Use Viewed", properties: nil)
+                        UIApplication.shared.open(store.termsURL)
+                    } label: {
+                        SettingsRow(
+                            iconName: "doc.text",
+                            title: "Terms of Use"
+                        )
+                    }
                 }
                 .card()
             }
@@ -196,13 +225,18 @@ struct SettingsView: View {
             .textCase(.uppercase)
     }
     
-    private func languageMenuRow(title: String, current: String, onChange: @escaping (String) -> Void) -> some View {
+    private func languageMenuRow(
+        title: String,
+        current: String,
+        autoLabel: String = Languages.autoDisplay,
+        onChange: @escaping (String) -> Void
+    ) -> some View {
         Menu {
             Picker(title, selection: Binding(
                 get: { current },
                 set: { onChange($0) }
             )) {
-                Text(Languages.autoDisplay).tag(Languages.autoCode)
+                Text(autoLabel).tag(Languages.autoCode)
                 Divider()
                 ForEach(Languages.supported) { lang in
                     Text(lang.name).tag(lang.code)
@@ -212,7 +246,9 @@ struct SettingsView: View {
             SettingsRow(
                 iconName: title.contains("Transcription") ? "mic.fill" : "character.bubble",
                 title: title,
-                trailingText: Languages.displayName(for: current)
+                trailingText: Languages.isNoTranslation(current)
+                    ? autoLabel
+                    : Languages.displayName(for: current)
             )
         }
         .buttonStyle(.plain)

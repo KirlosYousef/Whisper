@@ -21,12 +21,22 @@ struct TranscriptDetailView: View {
     @State private var showSummaryToast: Bool = false
     @State private var keywordsLoading: Bool = false
     @State private var canPlayRecording: Bool = true
+    @State private var showRenameSpeakers = false
     
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 12) {
-                RecordingHeaderCard(title: titleText, duration: recording.duration) {
+                RecordingHeaderCard(
+                    title: titleText,
+                    duration: recording.duration,
+                    speakerCount: recording.speakerStatus == .completed ? recording.speakerCount : 0
+                ) {
                     Menu {
+                        if recording.hasSpeakerLabels {
+                            Button {
+                                showRenameSpeakers = true
+                            } label: { Label("Rename speakers", systemImage: "person.crop.circle") }
+                        }
                         Button {
                             Task {
                                 await viewModel.generateFullSummary(for: recording)
@@ -101,6 +111,33 @@ struct TranscriptDetailView: View {
                             .frame(width: 32, height: 32)
                     }
                 }
+                
+                Button {
+                    qaRecording = recording
+                    AnalyticsService.shared.trackEvent("Ask/Act Opened", properties: [
+                        "recording_duration": recording.duration,
+                        "source": "transcript_detail"
+                    ])
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "questionmark.bubble")
+                            .font(.title3)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Ask or Act")
+                                .font(.subheadline)
+                                .fontWeight(.medium)
+                            Text("Ask questions or take action on this transcript")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .buttonStyle(.plain)
+                .card()
                 
                 // Summary with direct share
                 VStack(alignment: .leading, spacing: 6) {
@@ -182,6 +219,8 @@ struct TranscriptDetailView: View {
                 }
                 .card()
                 
+                speakerIdentificationCard
+                
                 if let todos = recording.todoList, !todos.isEmpty {
                     VStack(alignment: .leading, spacing: 6) {
                         Text("Action Items").font(.subheadline).fontWeight(.medium)
@@ -197,7 +236,24 @@ struct TranscriptDetailView: View {
                 }
                 
                 Group {
-                    if shouldShowFullTranscript {
+                    let building = viewModel.isBuildingSpeakerTranscript(for: recording)
+                    if building {
+                        SpeakerIdentificationProgressView()
+                            .transition(
+                                .asymmetric(
+                                    insertion: .opacity.combined(with: .scale(scale: 0.97)),
+                                    removal: .opacity
+                                )
+                            )
+                    } else if shouldShowSpeakerTurns {
+                        speakerTurnsList
+                            .transition(
+                                .asymmetric(
+                                    insertion: .opacity.combined(with: .offset(y: 16)),
+                                    removal: .opacity
+                                )
+                            )
+                    } else if shouldShowFullTranscript {
                         fullTranscriptCard
                     } else {
                         let segs = viewModel.segments(for: recording)
@@ -208,33 +264,9 @@ struct TranscriptDetailView: View {
                                     timeRange: timeRange(for: segment, in: segs),
                                     text: segment.text.isEmpty ? statusText(for: segment) : segment.text,
                                     isPlaying: playingSegmentId == segment.id,
-                                    isDisabled: !canPlayRecording,
+                                    isDisabled: !canPlayRecording || !viewModel.canPlay(segment),
                                     onPlayPause: {
-                                        // If playback disabled, ignore
-                                        guard canPlayRecording else { return }
-                                        // Proactively ensure segment has file available; if not, disable all
-                                        let path = segment.filePath
-                                        if path.isEmpty || !FileManager.default.fileExists(atPath: path) {
-                                            // Try fallback like ViewModel (Documents/Segments/<filename>)
-                                            let originalName = URL(fileURLWithPath: segment.filePath).lastPathComponent
-                                            if let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
-                                                let candidate = docs.appendingPathComponent("Segments", isDirectory: true).appendingPathComponent(originalName)
-                                                if !FileManager.default.fileExists(atPath: candidate.path) {
-                                                    canPlayRecording = false
-                                                    return
-                                                }
-                                            } else {
-                                                canPlayRecording = false
-                                                return
-                                            }
-                                        }
-                                        if playingSegmentId == segment.id {
-                                            PlaybackService.shared.stop()
-                                            playingSegmentId = nil
-                                        } else {
-                                            viewModel.play(segment: segment)
-                                            playingSegmentId = segment.id
-                                        }
+                                        togglePlayback(for: segment)
                                     },
                                     trailingMenu: {
                                         segmentMenu(for: segment)
@@ -245,6 +277,8 @@ struct TranscriptDetailView: View {
                         }
                     }
                 }
+                .animation(.spring(response: 0.5, dampingFraction: 0.86), value: viewModel.isBuildingSpeakerTranscript(for: recording))
+                .animation(.spring(response: 0.5, dampingFraction: 0.86), value: shouldShowSpeakerTurns)
                 .padding(.horizontal, 0)
             }
             .padding(.horizontal)
@@ -266,14 +300,28 @@ struct TranscriptDetailView: View {
                 }
             )
         }
+        .sheet(isPresented: $showRenameSpeakers) {
+            RenameSpeakersSheet(recording: recording) {
+                viewModel.saveSpeakerNames(for: recording)
+            }
+        }
+        .onAppear {
+            viewModel.resumeInterruptedSpeakerIdentification(for: recording)
+        }
     }
     
     private var titleText: String {
         recording.title?.isEmpty == false ? recording.title! : "Recording"
     }
 
+    private var shouldShowSpeakerTurns: Bool {
+        viewModel.usesSpeakerTurnDisplay(for: recording)
+    }
+
     private var shouldShowFullTranscript: Bool {
-        viewModel.usesFullTranscriptDisplay(for: recording) && !fullTranscriptText.isEmpty
+        !shouldShowSpeakerTurns &&
+        viewModel.usesFullTranscriptDisplay(for: recording) &&
+        !fullTranscriptText.isEmpty
     }
 
     private var fullTranscriptText: String {
@@ -308,6 +356,83 @@ struct TranscriptDetailView: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .card()
+    }
+
+    @ViewBuilder
+    private var speakerIdentificationCard: some View {
+        if viewModel.isBuildingSpeakerTranscript(for: recording) {
+            EmptyView()
+        } else if viewModel.canIdentifySpeakers(for: recording),
+                  AudioService.isUsableAudioFile(at: recording.filePath) || viewModel.segments(for: recording).contains(where: { viewModel.canPlay($0) }) {
+            Button {
+                guard !viewModel.isIdentifyingSpeakers(for: recording) else { return }
+                viewModel.retrySpeakerIdentification(for: recording)
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: recording.speakerStatus == .failed ? "arrow.clockwise" : "person.3.fill")
+                        .font(.title3)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(recording.speakerStatus == .failed ? "Try again" : "Identify speakers")
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                        Text(recording.speakerStatus == .failed
+                             ? "Speaker labels failed. Your transcript is still here."
+                             : "Label everyone who spoke, however many people.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    Spacer()
+                }
+            }
+            .buttonStyle(.plain)
+            .card()
+        }
+    }
+
+    private var speakerTurnsList: some View {
+        let segs = viewModel.segments(for: recording)
+        return LazyVStack(alignment: .leading, spacing: 10) {
+            ForEach(Array(segs.enumerated()), id: \.element.id) { index, segment in
+                let key = segment.speakerKey ?? ""
+                let canPlay = viewModel.canPlay(segment)
+                SpeakerTurnCard(
+                    speakerKey: key,
+                    displayName: recording.displayName(for: key),
+                    timeRange: SpeakerTimeFormatting.range(segment.playbackStart, segment.playbackEnd > segment.playbackStart ? segment.playbackEnd : recording.duration),
+                    text: segment.text,
+                    isActive: playingSegmentId == segment.id,
+                    isPlaying: playingSegmentId == segment.id,
+                    isDisabled: !canPlay,
+                    onPlayPause: {
+                        togglePlayback(for: segment)
+                    },
+                    trailingMenu: {
+                        segmentMenu(for: segment)
+                    }
+                )
+                .card()
+                .speakerTurnAppear(index: index)
+            }
+        }
+    }
+
+    private func togglePlayback(for segment: TranscriptionSegment) {
+        let canPlay = viewModel.canPlay(segment)
+        if !canPlay {
+            canPlayRecording = false
+            return
+        }
+        if playingSegmentId == segment.id {
+            PlaybackService.shared.stop()
+            playingSegmentId = nil
+        } else {
+            viewModel.play(segment: segment) {
+                if playingSegmentId == segment.id {
+                    playingSegmentId = nil
+                }
+            }
+            playingSegmentId = segment.id
+        }
     }
 
     private func segmentMenu(for segment: TranscriptionSegment) -> some View {
@@ -360,6 +485,9 @@ struct TranscriptDetailView: View {
     }
     
     private func timeRange(for segment: TranscriptionSegment, in all: [TranscriptionSegment]) -> String {
+        if segment.endTime > segment.playbackStart {
+            return SpeakerTimeFormatting.range(segment.playbackStart, segment.endTime)
+        }
         guard let idx = all.firstIndex(where: { $0.id == segment.id }) else {
             return singleTime(segment.timestamp)
         }

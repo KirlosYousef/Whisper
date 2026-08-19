@@ -10,13 +10,15 @@ import SwiftUI
 
 final class SettingsStore: ObservableObject {
     @AppStorage("transcriptionLanguage") var transcriptionLanguage: String = "auto"
-    @AppStorage("defaultTranslationLanguage") var defaultTranslationLanguage: String = "en"
+    @AppStorage("defaultTranslationLanguage") var defaultTranslationLanguage: String = "auto"
     @AppStorage("transcriptionMode") var transcriptionModeRawValue: String = TranscriptionMode.segments20s.rawValue
     @AppStorage("hapticsEnabled") var hapticsEnabled: Bool = true
+    @AppStorage("identifySpeakers") var identifySpeakers: Bool = true
     @AppStorage("hasCompletedOnboarding") var hasCompletedOnboarding: Bool = false
     
     let helpURL = URL(string: "https://www.revera.kirlosyousef.com/contact")!
     let privacyURL = URL(string: "https://www.revera.kirlosyousef.com/privacy")!
+    let termsURL = URL(string: "https://www.revera.kirlosyousef.com/terms")!
     let supportEmail = "hello@kirlosyousef.com"
 
     var transcriptionMode: TranscriptionMode {

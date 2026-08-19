@@ -92,13 +92,6 @@ final class RealtimeTranscriptionService {
     }
 
     func disconnect() {
-        // #region agent log
-        DebugSessionLog.write(hypothesisId: "H2", location: "RealtimeTranscriptionService.swift:disconnect", message: "Realtime socket disconnect", data: [
-            "handleErrorCount": handleErrorCount,
-            "uncommittedAudioByteCount": uncommittedAudioByteCount,
-            "wasSocketOpen": isSocketOpen
-        ])
-        // #endregion
         isStopping = true
         reconnectAttempts = maxReconnectAttempts
         closeSocket(notify: true, resetBuffers: true)
@@ -375,13 +368,6 @@ final class RealtimeTranscriptionService {
         case "conversation.item.input_audio_transcription.completed":
             let itemID = event["item_id"] as? String ?? UUID().uuidString
             let transcript = (event["transcript"] as? String) ?? ""
-            // #region agent log
-            DebugSessionLog.write(hypothesisId: "H3", location: "RealtimeTranscriptionService.swift:completed", message: "Realtime transcript completed", data: [
-                "transcriptLength": transcript.count,
-                "isStopping": isStopping,
-                "isEmpty": transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ])
-            // #endregion
             if !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 onEvent?(.completed(itemID: itemID, transcript: transcript))
             }
@@ -399,14 +385,6 @@ final class RealtimeTranscriptionService {
 
     private func handleError(_ error: Error) {
         handleErrorCount += 1
-        // #region agent log
-        DebugSessionLog.write(hypothesisId: "H2", location: "RealtimeTranscriptionService.swift:handleError", message: "Realtime handleError", data: [
-            "error": error.localizedDescription,
-            "isStopping": isStopping,
-            "handleErrorCount": handleErrorCount,
-            "isSocketOpen": isSocketOpen
-        ])
-        // #endregion
         handleTransientFailure(error.localizedDescription)
     }
 
@@ -427,13 +405,6 @@ final class RealtimeTranscriptionService {
             self.closeSocket(notify: false, resetBuffers: false)
             self.reconnectAttempts += 1
             let delay = min(8.0, pow(2.0, Double(self.reconnectAttempts - 1)) * 0.5)
-            // #region agent log
-            DebugSessionLog.write(hypothesisId: "H2", location: "RealtimeTranscriptionService.swift:handleTransientFailure", message: "Scheduling realtime reconnect", data: [
-                "attempt": self.reconnectAttempts,
-                "delay": delay,
-                "error": message
-            ])
-            // #endregion
             DispatchQueue.main.async {
                 self.onEvent?(.reconnecting(self.reconnectAttempts))
             }
@@ -450,6 +421,7 @@ enum OpenAIConfiguration {
     static let realtimeTranscriptionModel = "gpt-live-transcribe"
     static let fileTranscriptionModel = "gpt-transcribe"
     static let fileTranscriptionFallbackModel = "gpt-4o-transcribe"
+    static let diarizationModel = "gpt-4o-transcribe-diarize"
     static let transcriptionPrompt = "Voice note. Transcribe in the speaker's original language. Do not translate or switch languages."
 
     static var apiKey: String {

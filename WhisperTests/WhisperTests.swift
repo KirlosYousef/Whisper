@@ -6,7 +6,7 @@
 //
 
 import Testing
-@testable import Whisper
+@testable import Revera_AI
 
 struct WhisperTests {
 

@@ -102,6 +102,11 @@ struct OnboardingCoordinatorView: View {
         .onAppear {
             HapticsManager.shared.prepare()
         }
+        .onChange(of: paywallManager.isPremium) { _, isPremium in
+            if isPremium {
+                showPaywall = false
+            }
+        }
     }
 
     private func finishOnboarding() {

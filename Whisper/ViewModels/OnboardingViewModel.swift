@@ -130,11 +130,18 @@ final class OnboardingViewModel: ObservableObject {
                 ]
             ),
             OnboardingQuestion(
-                id: "language_needs",
-                title: "What language should we transcribe to?",
-                caption: "You can change this later in Settings.",
+                id: "transcription_language",
+                title: "What's the default language for your talks?",
+                caption: "Used when transcribing speech. Auto-detect works if you switch languages. You can change this later in Settings.",
                 isSearchable: true,
-                options: languagePreferenceOptions
+                options: transcriptionLanguageOptions
+            ),
+            OnboardingQuestion(
+                id: "translation_language",
+                title: "What language should we generate transcripts in?",
+                caption: "No translation keeps the original language. Pick a language only if you want everything auto-translated.",
+                isSearchable: true,
+                options: translationLanguageOptions
             ),
             OnboardingQuestion(
                 id: "realtime_needs",
@@ -145,8 +152,16 @@ final class OnboardingViewModel: ObservableObject {
         ]
     }
 
-    private static var languagePreferenceOptions: [OnboardingOption] {
-        var options = [OnboardingOption(id: Languages.autoCode, title: Languages.autoDisplay)]
+    private static var transcriptionLanguageOptions: [OnboardingOption] {
+        languageOptions(autoTitle: Languages.autoDisplay)
+    }
+
+    private static var translationLanguageOptions: [OnboardingOption] {
+        languageOptions(autoTitle: Languages.noTranslationDisplay)
+    }
+
+    private static func languageOptions(autoTitle: String) -> [OnboardingOption] {
+        var options = [OnboardingOption(id: Languages.autoCode, title: autoTitle)]
         options += Languages.supported.map { OnboardingOption(id: $0.code, title: $0.name) }
         return options
     }
@@ -298,11 +313,12 @@ final class OnboardingViewModel: ObservableObject {
 
         PaywallManager.shared.loginUser(name: userName)
 
-        AnalyticsService.shared.identify(userId: userName)
+        AnalyticsService.shared.identifyCurrentUser(displayName: userName)
 
         var properties: [String: Any] = [
             "user_name": userName,
             "total_questions": questions.count,
+            "transcription_language": settingsStore.transcriptionLanguage,
             "default_translation_language": settingsStore.defaultTranslationLanguage,
             "transcription_mode": settingsStore.transcriptionModeRawValue
         ]
@@ -333,10 +349,13 @@ final class OnboardingViewModel: ObservableObject {
     // MARK: - Preferences
 
     private func applyPreferenceDefaults() {
-        if selectedAnswers["language_needs"] == nil {
-            let defaultLanguage = Languages.preferredCodes().first ?? "en"
-            selectedAnswers["language_needs"] = defaultLanguage
-            persistPreferenceIfNeeded(questionId: "language_needs", answer: defaultLanguage)
+        if selectedAnswers["transcription_language"] == nil {
+            selectedAnswers["transcription_language"] = Languages.autoCode
+            persistPreferenceIfNeeded(questionId: "transcription_language", answer: Languages.autoCode)
+        }
+        if selectedAnswers["translation_language"] == nil {
+            selectedAnswers["translation_language"] = Languages.autoCode
+            persistPreferenceIfNeeded(questionId: "translation_language", answer: Languages.autoCode)
         }
         if selectedAnswers["realtime_needs"] == nil {
             let defaultMode = TranscriptionMode.segments20s.rawValue
@@ -346,8 +365,11 @@ final class OnboardingViewModel: ObservableObject {
     }
 
     private func persistSelectedPreferences() {
-        if let code = selectedAnswers["language_needs"] {
-            persistPreferenceIfNeeded(questionId: "language_needs", answer: code)
+        if let code = selectedAnswers["transcription_language"] {
+            persistPreferenceIfNeeded(questionId: "transcription_language", answer: code)
+        }
+        if let code = selectedAnswers["translation_language"] {
+            persistPreferenceIfNeeded(questionId: "translation_language", answer: code)
         }
         if let raw = selectedAnswers["realtime_needs"] {
             persistPreferenceIfNeeded(questionId: "realtime_needs", answer: raw)
@@ -356,7 +378,9 @@ final class OnboardingViewModel: ObservableObject {
 
     private func persistPreferenceIfNeeded(questionId: String, answer: String) {
         switch questionId {
-        case "language_needs":
+        case "transcription_language":
+            settingsStore.transcriptionLanguage = answer
+        case "translation_language":
             settingsStore.defaultTranslationLanguage = answer
         case "realtime_needs":
             if let mode = TranscriptionMode(rawValue: answer) {

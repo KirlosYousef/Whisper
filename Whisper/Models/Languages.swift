@@ -39,11 +39,27 @@ public enum Languages {
 	
 	public static let autoCode = "auto"
 	public static let autoDisplay = "Auto-detect"
+	public static let noTranslationDisplay = "No translation"
+	public static let sameAsSpokenDisplay = noTranslationDisplay
 	
 	public static func displayName(for code: String) -> String {
 		if code.lowercased() == autoCode { return autoDisplay }
 		return supported.first(where: { $0.code.lowercased() == code.lowercased() })?.name
 			?? code.uppercased()
+	}
+
+	public static func translationDisplayName(for code: String) -> String {
+		if isNoTranslation(code) { return noTranslationDisplay }
+		return displayName(for: code)
+	}
+
+	public static func isNoTranslation(_ code: String) -> Bool {
+		let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+		return trimmed.isEmpty || trimmed == autoCode
+	}
+
+	public static func translationTarget(from code: String) -> String? {
+		isNoTranslation(code) ? nil : code.trimmingCharacters(in: .whitespacesAndNewlines)
 	}
 
 	public static func isoCode(from localeIdentifier: String) -> String {

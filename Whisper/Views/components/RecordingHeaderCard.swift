@@ -10,11 +10,13 @@ import SwiftUI
 struct RecordingHeaderCard<Trailing: View>: View {
     let title: String
     let duration: TimeInterval
+    var speakerCount: Int = 0
     let trailing: () -> Trailing
     
-    init(title: String, duration: TimeInterval, @ViewBuilder trailing: @escaping () -> Trailing) {
+    init(title: String, duration: TimeInterval, speakerCount: Int = 0, @ViewBuilder trailing: @escaping () -> Trailing) {
         self.title = title
         self.duration = duration
+        self.speakerCount = speakerCount
         self.trailing = trailing
     }
     
@@ -22,7 +24,15 @@ struct RecordingHeaderCard<Trailing: View>: View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 6) {
                 Text(title).font(.headline)
-                Text(Self.formatDuration(duration)).font(.caption).foregroundColor(.secondary)
+                HStack(spacing: 6) {
+                    Text(Self.formatDuration(duration)).font(.caption).foregroundColor(.secondary)
+                    if speakerCount > 0 {
+                        Text("·").font(.caption).foregroundColor(.secondary)
+                        Text(speakerCount == 1 ? "1 speaker" : "\(speakerCount) speakers")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
             }
             Spacer()
             trailing()

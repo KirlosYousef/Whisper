@@ -3,6 +3,7 @@ import SwiftData
 
 struct TranscriptsListView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.colorScheme) private var colorScheme
     @ObservedObject var viewModel: RecordingViewModel
 	@Binding var tabSelection: Int
     @State private var showCopyAlert = false
@@ -44,7 +45,8 @@ struct TranscriptsListView: View {
 			viewModel.fetchRecordings()
 			viewModel.checkNetworkStatus()
 			AnalyticsService.shared.trackEvent("Transcripts List Viewed", properties: [
-				"recording_count": viewModel.recordings.count
+				"recording_count": viewModel.recordings.count,
+				"is_premium": PaywallManager.shared.isPremium
 			])
 		}
 		.alert(copyAlertMessage, isPresented: $showCopyAlert) {
@@ -64,6 +66,10 @@ struct TranscriptsListView: View {
 					.padding(.horizontal)
 			}
 			
+			
+			if viewModel.filteredRecordings.isEmpty {
+				emptyState
+			} else {
 			ScrollView {
 				LazyVStack(alignment: .leading, spacing: 12) {
 					ForEach(groupedRecordings.keys.sorted(by: >), id: \.self) { date in
@@ -89,7 +95,9 @@ struct TranscriptsListView: View {
 										title: recording.title?.isEmpty == false ? recording.title! : "Record \(idx + 1)",
                                         duration: timeLabel(recording.createdAt),
 										subtitle: {
-											recording.summary?.trimmingCharacters(in: .whitespacesAndNewlines)
+                                            let summary = recording.summary?.trimmingCharacters(in: .whitespacesAndNewlines)
+                                            if let summary, !summary.isEmpty { return summary }
+                                            return recording.speakerListSubtitle
 										}(),
 										trailing: {
 											HStack(spacing: 8) {
@@ -116,7 +124,45 @@ struct TranscriptsListView: View {
 					Spacer(minLength: 80)
 				}
 			}
+			}
 		}
+    }
+
+    @ViewBuilder
+    private var emptyState: some View {
+        VStack(spacing: 16) {
+            Spacer()
+            Image(systemName: viewModel.searchText.isEmpty ? "waveform" : "magnifyingglass")
+                .font(.system(size: 40, weight: .medium))
+                .foregroundStyle(.secondary)
+            Text(viewModel.searchText.isEmpty ? "No transcripts yet" : "No matching transcripts")
+                .font(.app(.bold, size: 22))
+            Text(viewModel.searchText.isEmpty
+                 ? "Record a conversation and Revera will transcribe it here."
+                 : "Try a different search.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 32)
+            if viewModel.searchText.isEmpty {
+                Button {
+                    tabSelection = 1
+                } label: {
+                    Text("Start recording")
+                        .font(.headline)
+                        .foregroundColor(colorScheme == .dark ? .black : .white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(colorScheme == .dark ? Color.white : Color.black)
+                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 40)
+                .padding(.top, 8)
+            }
+            Spacer(minLength: 80)
+        }
+        .frame(maxWidth: .infinity)
     }
     
     private var groupedRecordings: [Date: [Recording]] {

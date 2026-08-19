@@ -99,13 +99,28 @@ struct RecordScreen: View {
         if viewModel.isInterrupted {
             BannerView(icon: "exclamationmark.triangle.fill", title: "Recording Interrupted", subtitle: viewModel.interruptionMessage, color: .orange)
         }
-        if let status = viewModel.realtimeStatusText, viewModel.isRecording {
+        if let status = viewModel.realtimeStatusText {
             BannerView(
                 icon: viewModel.isRealtimeConnected ? "waveform" : "arrow.triangle.2.circlepath",
-                title: viewModel.isRealtimeConnected ? "Realtime Live" : "Realtime Status",
+                title: viewModel.isRealtimeConnected ? "Realtime Live" : "Status",
                 subtitle: status,
                 color: viewModel.isRealtimeConnected ? .green : .orange
             )
+        }
+        if let rec = viewModel.activeRecording,
+           rec.speakerStatus == .failed,
+           !viewModel.isRecording {
+            Button {
+                viewModel.retrySpeakerIdentification(for: rec)
+            } label: {
+                BannerView(
+                    icon: "person.2.slash",
+                    title: "Couldn’t identify speakers",
+                    subtitle: "Transcript kept. Tap to try again.",
+                    color: .orange
+                )
+            }
+            .buttonStyle(.plain)
         }
     }
     
@@ -114,18 +129,44 @@ struct RecordScreen: View {
         if let rec = viewModel.activeRecording {
             ScrollView {
                 VStack(alignment: .leading, spacing: 8) {
-                    if shouldShowLiveTranscript(for: rec) {
-                        LiveTranscriptView(
-                            words: viewModel.transcriptWords(for: rec),
-                            isConnected: viewModel.isRealtimeConnected,
-                            isRecording: viewModel.isRecording
-                        )
-                        .padding(.bottom, 8)
-                    }
+                    let building = viewModel.isBuildingSpeakerTranscript(for: rec)
+                    let speakerTurns = viewModel.usesSpeakerTurnDisplay(for: rec)
 
-                    if shouldShowSegmentRows(for: rec) {
-                        segmentsRows(for: rec)
+                    Group {
+                        if building {
+                            SpeakerIdentificationProgressView()
+                                .padding(.bottom, 8)
+                                .transition(
+                                    .asymmetric(
+                                        insertion: .opacity.combined(with: .scale(scale: 0.97)),
+                                        removal: .opacity
+                                    )
+                                )
+                        } else {
+                            VStack(alignment: .leading, spacing: 8) {
+                                if shouldShowLiveTranscript(for: rec) {
+                                    LiveTranscriptView(
+                                        words: viewModel.transcriptWords(for: rec),
+                                        isConnected: viewModel.isRealtimeConnected,
+                                        isRecording: viewModel.isRecording
+                                    )
+                                    .padding(.bottom, 8)
+                                }
+
+                                if shouldShowSegmentRows(for: rec) {
+                                    segmentsRows(for: rec)
+                                }
+                            }
+                            .transition(
+                                .asymmetric(
+                                    insertion: .opacity.combined(with: .offset(y: 16)),
+                                    removal: .opacity
+                                )
+                            )
+                        }
                     }
+                    .animation(.spring(response: 0.5, dampingFraction: 0.86), value: building)
+                    .animation(.spring(response: 0.5, dampingFraction: 0.86), value: speakerTurns)
                 }
                 // Keep bottom content visible above mic and translation chip
                 .padding(.bottom, docked ? 220 : 120)
@@ -135,9 +176,45 @@ struct RecordScreen: View {
 
     private func segmentsRows(for recording: Recording) -> some View {
         let segments = viewModel.segments(for: recording)
-        return ForEach(segments, id: \.id) { segment in
-            segmentCard(for: segment, in: segments, recordingDuration: recording.duration)
+        return ForEach(Array(segments.enumerated()), id: \.element.id) { index, segment in
+            if viewModel.usesSpeakerTurnDisplay(for: recording), let key = segment.speakerKey, !key.isEmpty {
+                speakerTurnCard(for: segment, in: recording)
+                    .speakerTurnAppear(index: index)
+            } else {
+                segmentCard(for: segment, in: segments, recordingDuration: recording.duration)
+            }
         }
+    }
+
+    private func speakerTurnCard(for segment: TranscriptionSegment, in recording: Recording) -> some View {
+        let key = segment.speakerKey ?? ""
+        let canPlay = viewModel.canPlay(segment) && !viewModel.isRecording
+        return SpeakerTurnCard(
+            speakerKey: key,
+            displayName: recording.displayName(for: key),
+            timeRange: SpeakerTimeFormatting.range(segment.playbackStart, segment.playbackEnd),
+            text: segment.text,
+            isActive: playingSegmentId == segment.id,
+            isPlaying: playingSegmentId == segment.id,
+            isDisabled: !canPlay,
+            showDisabledWarningIcon: !viewModel.isRecording && !canPlay,
+            onPlayPause: {
+                guard canPlay else { return }
+                if playingSegmentId == segment.id {
+                    PlaybackService.shared.stop()
+                    playingSegmentId = nil
+                } else {
+                    viewModel.play(segment: segment) {
+                        if playingSegmentId == segment.id {
+                            playingSegmentId = nil
+                        }
+                    }
+                    playingSegmentId = segment.id
+                }
+            },
+            trailingMenu: { EmptyView() }
+        )
+        .card()
     }
 
     private func segmentCard(for segment: TranscriptionSegment, in allSegments: [TranscriptionSegment], recordingDuration: TimeInterval) -> some View {
@@ -165,6 +242,12 @@ struct RecordScreen: View {
     }
 
     private func shouldShowLiveTranscript(for recording: Recording) -> Bool {
+        if viewModel.isBuildingSpeakerTranscript(for: recording) {
+            return false
+        }
+        if viewModel.usesSpeakerTurnDisplay(for: recording), !viewModel.isRecording {
+            return false
+        }
         let usesRealtimeLayout = viewModel.usesFullTranscriptDisplay(for: recording)
         guard usesRealtimeLayout else { return false }
 
@@ -177,6 +260,10 @@ struct RecordScreen: View {
     }
 
     private func shouldShowSegmentRows(for recording: Recording) -> Bool {
+        if viewModel.isBuildingSpeakerTranscript(for: recording) {
+            return false
+        }
+        if viewModel.usesSpeakerTurnDisplay(for: recording) { return true }
         let hasFullTranscript = viewModel.usesFullTranscriptDisplay(for: recording) &&
             !viewModel.transcriptWords(for: recording).isEmpty
 
