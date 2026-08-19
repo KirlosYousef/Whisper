@@ -76,6 +76,25 @@ final class SpeakerDiarizationTests: XCTestCase {
         recording.setDisplayName("   ", for: "A")
         XCTAssertEqual(recording.displayName(for: "A"), "Speaker 1")
         XCTAssertEqual(recording.displayName(for: "B"), "Sara")
+        XCTAssertEqual(recording.turnCount(for: "A"), 1)
+    }
+
+    func testRenamingOneSpeakerUpdatesEveryTurn() throws {
+        let recording = insertRecording()
+        attachTurn(to: recording, key: "A", start: 0, end: 1, text: "First from A")
+        attachTurn(to: recording, key: "B", start: 1, end: 2, text: "From B")
+        attachTurn(to: recording, key: "A", start: 2, end: 3, text: "Second from A")
+        recording.speakerStatus = .completed
+        recording.speakerCount = 2
+        recording.setDisplayName("Kirlos", for: "A")
+        try modelContext.save()
+
+        XCTAssertEqual(recording.turnCount(for: "A"), 2)
+        XCTAssertEqual(recording.turnCount(for: "B"), 1)
+        XCTAssertTrue(recording.fullTranscript.contains("Kirlos: First from A"))
+        XCTAssertTrue(recording.fullTranscript.contains("Kirlos: Second from A"))
+        XCTAssertTrue(recording.fullTranscript.contains("Speaker 2: From B"))
+        XCTAssertEqual(recording.speakerListSubtitle, "Kirlos, Speaker 2")
     }
 
     func testAnyNumberOfSpeakersGetsGenericLabels() throws {

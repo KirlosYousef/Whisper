@@ -14,7 +14,9 @@ struct SpeakerTurnCard<TrailingMenu: View>: View {
     let isPlaying: Bool
     let isDisabled: Bool
     let showDisabledWarningIcon: Bool
+    let isHighlighted: Bool
     let onPlayPause: () -> Void
+    var onNameTap: (() -> Void)? = nil
     @ViewBuilder var trailingMenu: () -> TrailingMenu
     @Environment(\.colorScheme) private var colorScheme
 
@@ -27,7 +29,9 @@ struct SpeakerTurnCard<TrailingMenu: View>: View {
         isPlaying: Bool,
         isDisabled: Bool,
         showDisabledWarningIcon: Bool = true,
+        isHighlighted: Bool = false,
         onPlayPause: @escaping () -> Void,
+        onNameTap: (() -> Void)? = nil,
         @ViewBuilder trailingMenu: @escaping () -> TrailingMenu
     ) {
         self.speakerKey = speakerKey
@@ -38,7 +42,9 @@ struct SpeakerTurnCard<TrailingMenu: View>: View {
         self.isPlaying = isPlaying
         self.isDisabled = isDisabled
         self.showDisabledWarningIcon = showDisabledWarningIcon
+        self.isHighlighted = isHighlighted
         self.onPlayPause = onPlayPause
+        self.onNameTap = onNameTap
         self.trailingMenu = trailingMenu
     }
 
@@ -63,17 +69,27 @@ struct SpeakerTurnCard<TrailingMenu: View>: View {
 
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 8) {
-                    Circle()
-                        .fill(SpeakerStyle.color(for: speakerKey))
-                        .frame(width: 22, height: 22)
-                        .overlay(
-                            Text(SpeakerStyle.initial(for: displayName))
-                                .font(.app(.semibold, size: 11))
-                                .foregroundColor(.white)
-                        )
-                    Text(displayName)
-                        .font(.app(.medium, size: 15))
-                        .foregroundColor(.primary)
+                    Button {
+                        HapticsManager.shared.selection()
+                        onNameTap?()
+                    } label: {
+                        HStack(spacing: 8) {
+                            Circle()
+                                .fill(SpeakerStyle.color(for: speakerKey))
+                                .frame(width: 22, height: 22)
+                                .overlay(
+                                    Text(SpeakerStyle.initial(for: displayName))
+                                        .font(.app(.semibold, size: 11))
+                                        .foregroundColor(.white)
+                                )
+                            Text(displayName)
+                                .font(.app(.medium, size: 15))
+                                .foregroundColor(.primary)
+                                .contentTransition(.opacity)
+                                .animation(.easeInOut(duration: 0.2), value: displayName)
+                        }
+                    }
+                    .buttonStyle(.plain)
                     Spacer(minLength: 0)
                     Text(timeRange)
                         .font(.app(.medium, size: 13))
@@ -88,12 +104,12 @@ struct SpeakerTurnCard<TrailingMenu: View>: View {
             trailingMenu()
         }
         .padding(12)
-        .background(isActive
+        .background(isActive || isHighlighted
                     ? (colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.06))
                     : .clear)
         .overlay(
             RoundedRectangle(cornerRadius: AppTheme.cornerRadius)
-                .stroke(isActive
+                .stroke(isActive || isHighlighted
                         ? (colorScheme == .dark ? Color.white.opacity(0.4) : Color.black.opacity(0.15))
                         : AppTheme.cardStroke,
                         lineWidth: 1)

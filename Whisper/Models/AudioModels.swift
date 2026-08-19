@@ -120,6 +120,14 @@ public final class Recording: Identifiable {
         return speakerCount == 1 ? "1 speaker" : "\(speakerCount) speakers"
     }
 
+    func hasCustomName(for speakerKey: String) -> Bool {
+        decodedDisplayNames()[speakerKey]?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    }
+
+    func turnCount(for speakerKey: String) -> Int {
+        sortedSegments.filter { $0.speakerKey == speakerKey }.count
+    }
+
     func snippet(for speakerKey: String, maxCharacters: Int = 80) -> String {
         let text = sortedSegments
             .first { $0.speakerKey == speakerKey && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }?

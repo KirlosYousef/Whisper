@@ -21,9 +21,10 @@ struct TranscriptDetailView: View {
     @State private var showSummaryToast: Bool = false
     @State private var keywordsLoading: Bool = false
     @State private var canPlayRecording: Bool = true
-    @State private var showRenameSpeakers = false
+    @State private var focusedSpeakerKey: String? = nil
     
     var body: some View {
+        ScrollViewReader { proxy in
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 12) {
                 RecordingHeaderCard(
@@ -34,8 +35,11 @@ struct TranscriptDetailView: View {
                     Menu {
                         if recording.hasSpeakerLabels {
                             Button {
-                                showRenameSpeakers = true
-                            } label: { Label("Rename speakers", systemImage: "person.crop.circle") }
+                                withAnimation(.spring(response: 0.45, dampingFraction: 0.86)) {
+                                    proxy.scrollTo("speaker-roster", anchor: .top)
+                                }
+                                focusedSpeakerKey = recording.speakerKeysInAppearanceOrder().first
+                            } label: { Label("Name speakers", systemImage: "person.crop.circle") }
                         }
                         Button {
                             Task {
@@ -246,13 +250,27 @@ struct TranscriptDetailView: View {
                                 )
                             )
                     } else if shouldShowSpeakerTurns {
-                        speakerTurnsList
-                            .transition(
-                                .asymmetric(
-                                    insertion: .opacity.combined(with: .offset(y: 16)),
-                                    removal: .opacity
-                                )
+                        VStack(alignment: .leading, spacing: 12) {
+                            SpeakerRosterView(
+                                recording: recording,
+                                focusedSpeakerKey: $focusedSpeakerKey,
+                                onNameChange: { key, name in
+                                    viewModel.updateSpeakerName(name, for: key, in: recording)
+                                },
+                                onEditingEnded: {
+                                    viewModel.saveSpeakerNames(for: recording)
+                                }
                             )
+                            .id("speaker-roster")
+
+                            speakerTurnsList(proxy: proxy)
+                        }
+                        .transition(
+                            .asymmetric(
+                                insertion: .opacity.combined(with: .offset(y: 16)),
+                                removal: .opacity
+                            )
+                        )
                     } else if shouldShowFullTranscript {
                         fullTranscriptCard
                     } else {
@@ -300,13 +318,9 @@ struct TranscriptDetailView: View {
                 }
             )
         }
-        .sheet(isPresented: $showRenameSpeakers) {
-            RenameSpeakersSheet(recording: recording) {
-                viewModel.saveSpeakerNames(for: recording)
-            }
-        }
         .onAppear {
             viewModel.resumeInterruptedSpeakerIdentification(for: recording)
+        }
         }
     }
     
@@ -389,8 +403,9 @@ struct TranscriptDetailView: View {
         }
     }
 
-    private var speakerTurnsList: some View {
+    private func speakerTurnsList(proxy: ScrollViewProxy) -> some View {
         let segs = viewModel.segments(for: recording)
+        let namesJSON = recording.speakerDisplayNamesJSON
         return LazyVStack(alignment: .leading, spacing: 10) {
             ForEach(Array(segs.enumerated()), id: \.element.id) { index, segment in
                 let key = segment.speakerKey ?? ""
@@ -403,8 +418,15 @@ struct TranscriptDetailView: View {
                     isActive: playingSegmentId == segment.id,
                     isPlaying: playingSegmentId == segment.id,
                     isDisabled: !canPlay,
+                    isHighlighted: focusedSpeakerKey == key,
                     onPlayPause: {
                         togglePlayback(for: segment)
+                    },
+                    onNameTap: {
+                        focusedSpeakerKey = key
+                        withAnimation(.spring(response: 0.45, dampingFraction: 0.86)) {
+                            proxy.scrollTo("speaker-roster", anchor: .top)
+                        }
                     },
                     trailingMenu: {
                         segmentMenu(for: segment)
@@ -412,6 +434,7 @@ struct TranscriptDetailView: View {
                 )
                 .card()
                 .speakerTurnAppear(index: index)
+                .animation(.easeInOut(duration: 0.2), value: namesJSON)
             }
         }
     }

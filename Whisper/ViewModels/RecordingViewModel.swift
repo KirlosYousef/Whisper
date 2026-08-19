@@ -1371,13 +1371,17 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         playbackURL(for: segment) != nil
     }
 
+    func updateSpeakerName(_ name: String, for speakerKey: String, in recording: Recording) {
+        recording.setDisplayName(name, for: speakerKey)
+        try? modelContext.save()
+    }
+
     func saveSpeakerNames(for recording: Recording) {
         try? modelContext.save()
         fetchRecordings()
         AnalyticsService.shared.trackEvent("Speaker Renamed", properties: [
             "speaker_count": recording.speakerCount
         ])
-        HapticsManager.shared.notification(.success)
     }
     
     // MARK: - Playback

@@ -7,6 +7,7 @@ struct RecordScreen: View {
     @ObservedObject var viewModel: RecordingViewModel
     @State private var docked = false
     @State private var playingSegmentId: UUID? = nil
+    @State private var focusedSpeakerKey: String? = nil
     
     var body: some View {
 		ZStack {
@@ -127,10 +128,12 @@ struct RecordScreen: View {
     @ViewBuilder
     private var segmentsList: some View {
         if let rec = viewModel.activeRecording {
+            ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 8) {
                     let building = viewModel.isBuildingSpeakerTranscript(for: rec)
                     let speakerTurns = viewModel.usesSpeakerTurnDisplay(for: rec)
+                    let namesJSON = rec.speakerDisplayNamesJSON
 
                     Group {
                         if building {
@@ -144,6 +147,21 @@ struct RecordScreen: View {
                                 )
                         } else {
                             VStack(alignment: .leading, spacing: 8) {
+                                if speakerTurns {
+                                    SpeakerRosterView(
+                                        recording: rec,
+                                        focusedSpeakerKey: $focusedSpeakerKey,
+                                        onNameChange: { key, name in
+                                            viewModel.updateSpeakerName(name, for: key, in: rec)
+                                        },
+                                        onEditingEnded: {
+                                            viewModel.saveSpeakerNames(for: rec)
+                                        }
+                                    )
+                                    .id("speaker-roster")
+                                    .padding(.bottom, 4)
+                                }
+
                                 if shouldShowLiveTranscript(for: rec) {
                                     LiveTranscriptView(
                                         words: viewModel.transcriptWords(for: rec),
@@ -154,7 +172,7 @@ struct RecordScreen: View {
                                 }
 
                                 if shouldShowSegmentRows(for: rec) {
-                                    segmentsRows(for: rec)
+                                    segmentsRows(for: rec, proxy: proxy, namesJSON: namesJSON)
                                 }
                             }
                             .transition(
@@ -171,22 +189,24 @@ struct RecordScreen: View {
                 // Keep bottom content visible above mic and translation chip
                 .padding(.bottom, docked ? 220 : 120)
             }
+            }
         }
     }
 
-    private func segmentsRows(for recording: Recording) -> some View {
+    private func segmentsRows(for recording: Recording, proxy: ScrollViewProxy, namesJSON: String) -> some View {
         let segments = viewModel.segments(for: recording)
         return ForEach(Array(segments.enumerated()), id: \.element.id) { index, segment in
             if viewModel.usesSpeakerTurnDisplay(for: recording), let key = segment.speakerKey, !key.isEmpty {
-                speakerTurnCard(for: segment, in: recording)
+                speakerTurnCard(for: segment, in: recording, proxy: proxy)
                     .speakerTurnAppear(index: index)
+                    .animation(.easeInOut(duration: 0.2), value: namesJSON)
             } else {
                 segmentCard(for: segment, in: segments, recordingDuration: recording.duration)
             }
         }
     }
 
-    private func speakerTurnCard(for segment: TranscriptionSegment, in recording: Recording) -> some View {
+    private func speakerTurnCard(for segment: TranscriptionSegment, in recording: Recording, proxy: ScrollViewProxy) -> some View {
         let key = segment.speakerKey ?? ""
         let canPlay = viewModel.canPlay(segment) && !viewModel.isRecording
         return SpeakerTurnCard(
@@ -198,6 +218,7 @@ struct RecordScreen: View {
             isPlaying: playingSegmentId == segment.id,
             isDisabled: !canPlay,
             showDisabledWarningIcon: !viewModel.isRecording && !canPlay,
+            isHighlighted: focusedSpeakerKey == key,
             onPlayPause: {
                 guard canPlay else { return }
                 if playingSegmentId == segment.id {
@@ -210,6 +231,12 @@ struct RecordScreen: View {
                         }
                     }
                     playingSegmentId = segment.id
+                }
+            },
+            onNameTap: {
+                focusedSpeakerKey = key
+                withAnimation(.spring(response: 0.45, dampingFraction: 0.86)) {
+                    proxy.scrollTo("speaker-roster", anchor: .top)
                 }
             },
             trailingMenu: { EmptyView() }
