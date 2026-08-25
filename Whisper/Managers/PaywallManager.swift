@@ -88,6 +88,11 @@ class PaywallManager: NSObject, ObservableObject {
                 "is_premium": isPremiumMember,
                 "entitlement_count": customerInfo.entitlements.active.count
             ])
+            if isPremiumMember {
+                AnalyticsService.shared.trackEvent("Premium Activated", properties: [
+                    "entitlement_count": customerInfo.entitlements.active.count
+                ])
+            }
             if wasPremium && !isPremiumMember {
                 AnalyticsService.shared.trackEvent("Premium Expired", properties: [
                     "entitlement_count": customerInfo.entitlements.active.count

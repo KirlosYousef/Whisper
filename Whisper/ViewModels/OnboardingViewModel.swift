@@ -81,6 +81,7 @@ final class OnboardingViewModel: ObservableObject {
     private let settingsStore = SettingsStore()
     private lazy var audioService = AudioService()
     private var microphonePermissionResult: String?
+    private var trackedCompletedQuestionIDs: Set<String> = []
 
     // MARK: - Questions
 
@@ -209,18 +210,12 @@ final class OnboardingViewModel: ObservableObject {
         guard let question = currentQuestion else { return }
         selectedAnswers[question.id] = answer
         persistPreferenceIfNeeded(questionId: question.id, answer: answer)
-        AnalyticsService.shared.trackEvent("Onboarding Question Answered", properties: [
-            "question_id": question.id,
-            "question_title": question.title,
-            "answer": answer,
-            "question_number": currentQuestionIndex + 1,
-            "total_questions": questions.count
-        ])
         HapticsManager.shared.selection()
     }
 
     func nextQuestion() {
         guard canProceedToNextQuestion, !isLastQuestion else { return }
+        trackCurrentQuestionCompletionIfNeeded()
         withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
             currentQuestionIndex += 1
         }
@@ -271,6 +266,7 @@ final class OnboardingViewModel: ObservableObject {
 
     func proceedToNameEntry() {
         guard isLastQuestion, canProceedToNextQuestion else { return }
+        trackCurrentQuestionCompletionIfNeeded()
         withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
             currentStep = .nameEntry
         }
@@ -320,7 +316,8 @@ final class OnboardingViewModel: ObservableObject {
             "total_questions": questions.count,
             "transcription_language": settingsStore.transcriptionLanguage,
             "default_translation_language": settingsStore.defaultTranslationLanguage,
-            "transcription_mode": settingsStore.transcriptionModeRawValue
+            "transcription_mode": settingsStore.transcriptionModeRawValue,
+            "demo_outcome": settingsStore.onboardingDemoOutcome
         ]
 
         if let microphonePermissionResult {
@@ -374,6 +371,22 @@ final class OnboardingViewModel: ObservableObject {
         if let raw = selectedAnswers["realtime_needs"] {
             persistPreferenceIfNeeded(questionId: "realtime_needs", answer: raw)
         }
+    }
+
+    private func trackCurrentQuestionCompletionIfNeeded() {
+        guard let question = currentQuestion,
+              let answer = selectedAnswers[question.id],
+              trackedCompletedQuestionIDs.insert(question.id).inserted else {
+            return
+        }
+
+        AnalyticsService.shared.trackEvent("Onboarding Question Answered", properties: [
+            "question_id": question.id,
+            "question_title": question.title,
+            "answer": answer,
+            "question_number": currentQuestionIndex + 1,
+            "total_questions": questions.count
+        ])
     }
 
     private func persistPreferenceIfNeeded(questionId: String, answer: String) {

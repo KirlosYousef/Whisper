@@ -68,6 +68,20 @@ class TranscriptionService {
         // No blocking check needed here - let the API call fail naturally if offline
         transcribeWithRetry(audioURL: audioURL, retryCount: 0, completion: completion)
     }
+
+    func transcribe(audioURL: URL, segmentStart: TimeInterval, duration: TimeInterval) async throws -> String {
+        try await withCheckedThrowingContinuation { continuation in
+            transcribe(audioURL: audioURL, segmentStart: segmentStart, duration: duration) { text, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else if let text {
+                    continuation.resume(returning: text)
+                } else {
+                    continuation.resume(throwing: TranscriptionError.invalidResponse)
+                }
+            }
+        }
+    }
     
     private func transcribeWithRetry(audioURL: URL, retryCount: Int, model: String = OpenAIConfiguration.fileTranscriptionModel, completion: @escaping (String?, Error?) -> Void) {
         transcribeWithOpenAI(audioURL: audioURL, model: model) { [weak self] text, error in

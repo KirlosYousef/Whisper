@@ -28,7 +28,17 @@ final class AnalyticsService {
         Mixpanel.mainInstance().loggingEnabled = false
         #endif
         Mixpanel.mainInstance().serverURL = "https://api-eu.mixpanel.com"
+        registerSuperProperties([
+            "app_version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown",
+            "app_build": Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
+        ])
         identifyCurrentUser()
+    }
+
+    func registerSuperProperties(_ properties: [String: Any]) {
+        let converted = properties.compactMapValues(Self.mixpanelValue)
+        guard !converted.isEmpty else { return }
+        Mixpanel.mainInstance().registerSuperProperties(converted)
     }
 
     private func loadMixpanelToken() -> String? {
@@ -44,20 +54,22 @@ final class AnalyticsService {
     /// Track a discrete event
     /// Properties can contain String, Int, Double, Bool, or arrays of these types
     func trackEvent(_ name: String, properties: [String: Any]? = nil) {
-        let mixpanelProperties = properties?.compactMapValues { value -> MixpanelType? in
-            if let string = value as? String { return string }
-            if let int = value as? Int { return int }
-            if let double = value as? Double { return double }
-            if let bool = value as? Bool { return bool }
-            if let date = value as? Date { return date }
-            if let url = value as? URL { return url }
-            if let array = value as? [String] { return array }
-            if let array = value as? [Int] { return array }
-            if let array = value as? [Double] { return array }
-            if let array = value as? [Bool] { return array }
-            return String(describing: value)
-        }
+        let mixpanelProperties = properties?.compactMapValues(Self.mixpanelValue)
         Mixpanel.mainInstance().track(event: name, properties: mixpanelProperties)
+    }
+
+    private static func mixpanelValue(_ value: Any) -> MixpanelType? {
+        if let string = value as? String { return string }
+        if let int = value as? Int { return int }
+        if let double = value as? Double { return double }
+        if let bool = value as? Bool { return bool }
+        if let date = value as? Date { return date }
+        if let url = value as? URL { return url }
+        if let array = value as? [String] { return array }
+        if let array = value as? [Int] { return array }
+        if let array = value as? [Double] { return array }
+        if let array = value as? [Bool] { return array }
+        return String(describing: value)
     }
 
     /// Stable anonymous identity. Optional display name is a people property, never the distinct ID.

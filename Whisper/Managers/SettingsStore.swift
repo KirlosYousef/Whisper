@@ -15,6 +15,8 @@ final class SettingsStore: ObservableObject {
     @AppStorage("hapticsEnabled") var hapticsEnabled: Bool = true
     @AppStorage("identifySpeakers") var identifySpeakers: Bool = true
     @AppStorage("hasCompletedOnboarding") var hasCompletedOnboarding: Bool = false
+    @AppStorage("pendingPaywallSource") var pendingPaywallSource: String = ""
+    @AppStorage("onboardingDemoOutcome") var onboardingDemoOutcome: String = "not_applicable"
     
     let helpURL = URL(string: "https://www.revera.kirlosyousef.com/contact")!
     let privacyURL = URL(string: "https://www.revera.kirlosyousef.com/privacy")!
@@ -26,5 +28,4 @@ final class SettingsStore: ObservableObject {
         set { transcriptionModeRawValue = newValue.rawValue }
     }
 }
-
 

@@ -5,6 +5,7 @@ struct LiveTranscriptView: View {
     let isConnected: Bool
     let isRecording: Bool
     var bottomAnchorId: String = "live-transcript-end"
+    var reportsBottomPosition = true
     @Environment(\.colorScheme) private var colorScheme
     @State private var highlightedWordKey: String?
     @State private var highlightVersion = 0
@@ -16,17 +17,19 @@ struct LiveTranscriptView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.vertical, 4)
 
-            Color.clear
-                .frame(height: 1)
-                .id(bottomAnchorId)
-                .background(
-                    GeometryReader { geo in
-                        Color.clear.preference(
-                            key: LiveTranscriptBottomPreferenceKey.self,
-                            value: geo.frame(in: .named("recordScroll")).minY
-                        )
-                    }
-                )
+            if reportsBottomPosition {
+                Color.clear
+                    .frame(height: 1)
+                    .id(bottomAnchorId)
+                    .background(
+                        GeometryReader { geo in
+                            Color.clear.preference(
+                                key: LiveTranscriptBottomPreferenceKey.self,
+                                value: geo.frame(in: .named("recordScroll")).minY
+                            )
+                        }
+                    )
+            }
         }
         .padding(16)
         .frame(maxWidth: .infinity, minHeight: 220, alignment: .topLeading)
@@ -54,7 +57,7 @@ struct LiveTranscriptView: View {
     private var transcriptText: some View {
         Group {
             if words.isEmpty {
-                Text(isRecording ? "Listening..." : "Transcript will appear here.")
+                Text(emptyStateText)
                     .font(.app(.medium, size: 24))
                     .foregroundColor(.secondary)
             } else {
@@ -63,6 +66,11 @@ struct LiveTranscriptView: View {
                     .animation(.spring(response: 0.25, dampingFraction: 0.78), value: words.count)
             }
         }
+    }
+
+    private var emptyStateText: String {
+        guard isRecording else { return "Transcript will appear here." }
+        return isConnected ? "Listening…" : "Getting realtime ready…"
     }
 
     private var combinedTranscriptText: Text {

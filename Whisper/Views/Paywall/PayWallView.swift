@@ -7,20 +7,100 @@
 
 
 import SwiftUI
+import RevenueCat
 import RevenueCatUI
+
+enum PaywallSource: String {
+    case onboardingControl = "onboarding_control"
+    case onboardingRealtimeDemo = "onboarding_realtime_demo"
+    case mainApp = "main_app"
+}
 
 struct PayWallView: View {
     var displayCloseButton: Bool = false
+    var onImpressionTracked: () -> Void = {}
+
+    @State private var presentationID = UUID().uuidString
+    @State private var didTrackImpression = false
+    @State private var activePackageProperties: [String: Any] = [:]
+    @State private var analyticsSource: PaywallSource
+    @State private var analyticsDemoOutcome: String
+
+    init(
+        displayCloseButton: Bool = false,
+        source: PaywallSource = .mainApp,
+        demoOutcome: String = "not_applicable",
+        onImpressionTracked: @escaping () -> Void = {}
+    ) {
+        self.displayCloseButton = displayCloseButton
+        self.onImpressionTracked = onImpressionTracked
+        _analyticsSource = State(initialValue: source)
+        _analyticsDemoOutcome = State(initialValue: demoOutcome)
+    }
     
     var body: some View {
         PaywallView(displayCloseButton: displayCloseButton)
-            .onAppear {
-                HapticsManager.shared.impact(.light)
-                AnalyticsService.shared.trackEvent("Paywall Shown", properties: [
-                    "display_close_button": displayCloseButton,
-                    "source": "onboarding"
+            .onPurchaseStarted { package in
+                activePackageProperties = packageProperties(package)
+                track("Paywall Purchase Started", properties: activePackageProperties)
+            }
+            .onPurchaseCompleted { transaction, customerInfo in
+                var properties = activePackageProperties
+                properties["entitlement_count"] = customerInfo.entitlements.active.count
+                if let transaction {
+                    properties["transaction_product_identifier"] = transaction.productIdentifier
+                }
+                track("Paywall Purchase Completed", properties: properties)
+            }
+            .onPurchaseCancelled {
+                track("Paywall Purchase Cancelled", properties: activePackageProperties)
+            }
+            .onPurchaseFailure { error in
+                var properties = activePackageProperties
+                properties["error_code"] = error.code
+                properties["error_domain"] = error.domain
+                track("Paywall Purchase Failed", properties: properties)
+            }
+            .onRestoreStarted {
+                track("Paywall Restore Started")
+            }
+            .onRestoreCompleted { customerInfo in
+                track("Paywall Restore Completed", properties: [
+                    "entitlement_count": customerInfo.entitlements.active.count
                 ])
             }
+            .onRestoreFailure { error in
+                track("Paywall Restore Failed", properties: [
+                    "error_code": error.code,
+                    "error_domain": error.domain
+                ])
+            }
+            .onAppear {
+                guard !didTrackImpression else { return }
+                didTrackImpression = true
+                HapticsManager.shared.impact(.light)
+                track("Paywall Shown", properties: ["display_close_button": displayCloseButton])
+                onImpressionTracked()
+            }
+    }
+
+    private func packageProperties(_ package: Package) -> [String: Any] {
+        [
+            "package_identifier": package.identifier,
+            "package_type": String(describing: package.packageType),
+            "product_identifier": package.storeProduct.productIdentifier,
+            "price": NSDecimalNumber(decimal: package.storeProduct.price).doubleValue,
+            "currency": package.storeProduct.currencyCode ?? "unknown",
+            "has_intro_offer": package.storeProduct.introductoryDiscount != nil
+        ]
+    }
+
+    private func track(_ event: String, properties: [String: Any] = [:]) {
+        var merged = properties
+        merged["source"] = analyticsSource.rawValue
+        merged["demo_outcome"] = analyticsDemoOutcome
+        merged["paywall_presentation_id"] = presentationID
+        AnalyticsService.shared.trackEvent(event, properties: merged)
     }
 }
 
@@ -34,7 +114,7 @@ struct PayWallViewModifier: ViewModifier {
         content
             .fullScreenCover(isPresented: $showPaywall) {
                 ZStack {
-                    PayWallView(displayCloseButton: false)
+                    PayWallView(displayCloseButton: false, source: .mainApp)
                     
                     if showCloseButton {
                         VStack {

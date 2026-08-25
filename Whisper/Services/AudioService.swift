@@ -8,6 +8,11 @@
 import Foundation
 import AVFoundation
 
+enum AudioStoragePolicy {
+    case persistent
+    case ephemeral
+}
+
 protocol AudioServiceDelegate: AnyObject {
     func audioService(_ service: AudioService, didFinishSegment url: URL, duration: TimeInterval, startTime: TimeInterval)
     func audioService(_ service: AudioService, didUpdateAudioLevel level: Float)
@@ -21,6 +26,7 @@ extension AudioServiceDelegate {
 }
 
 class AudioService: NSObject {
+    private static let onboardingDemoFilePrefix = "onboarding-demo-"
     private var audioEngine: AVAudioEngine?
     private var inputNode: AVAudioInputNode?
     private var recordingSession: AVAudioSession!
@@ -44,6 +50,7 @@ class AudioService: NSObject {
     private var wasInterrupted = false
     private var isTapInstalled = false
     private var shouldSplitIntoSegments = true
+    private var storagePolicy: AudioStoragePolicy = .persistent
     private var sessionStartTime: Date?
     weak var delegate: AudioServiceDelegate?
 
@@ -62,6 +69,18 @@ class AudioService: NSObject {
         super.init()
         recordingSession = AVAudioSession.sharedInstance()
         setupAudioSessionNotifications()
+    }
+
+    static func removeStaleOnboardingDemoFiles() {
+        let fileManager = FileManager.default
+        guard let files = try? fileManager.contentsOfDirectory(
+            at: fileManager.temporaryDirectory,
+            includingPropertiesForKeys: nil
+        ) else { return }
+
+        for file in files where file.lastPathComponent.hasPrefix(onboardingDemoFilePrefix) {
+            try? fileManager.removeItem(at: file)
+        }
     }
     
     private func segmentsDirectoryURL() -> URL? {
@@ -185,7 +204,11 @@ class AudioService: NSObject {
         }
     }
     
-    func startRecording(splitIntoSegments: Bool = true, completion: @escaping (Bool, String?) -> Void) {
+    func startRecording(
+        splitIntoSegments: Bool = true,
+        storagePolicy: AudioStoragePolicy = .persistent,
+        completion: @escaping (Bool, String?) -> Void
+    ) {
         // Check available disk space before starting
         if !hasSufficientDiskSpace() {
             completion(false, "Insufficient disk space. Please free up some space and try again.")
@@ -193,6 +216,7 @@ class AudioService: NSObject {
         }
         
         shouldSplitIntoSegments = splitIntoSegments
+        self.storagePolicy = storagePolicy
         segmentIndex = 0
         segmentStartTime = 0
         sessionStartTime = nil
@@ -207,7 +231,10 @@ class AudioService: NSObject {
     private func startNewSegment(completion: ((Bool, String?) -> Void)? = nil) {
         // Record to persistent WAV file under Documents/Segments so it survives app relaunch
         let wavURL: URL
-        if let dir = segmentsDirectoryURL() {
+        if storagePolicy == .ephemeral {
+            wavURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("\(Self.onboardingDemoFilePrefix)\(UUID().uuidString).wav")
+        } else if let dir = segmentsDirectoryURL() {
             wavURL = dir.appendingPathComponent(UUID().uuidString + ".wav")
         } else {
             // Fallback to temporary if documents dir is unavailable

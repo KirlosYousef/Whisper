@@ -72,8 +72,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     private var realtimeTranscriptionService: RealtimeTranscriptionService
     private let settingsStore = SettingsStore()
     private var activeTranscriptionMode: TranscriptionMode = .segments20s
-    private var realtimeItemOrder: [String] = []
-    private var realtimeItemTexts: [String: String] = [:]
+    private var realtimeTranscriptAccumulator = RealtimeTranscriptAccumulator()
     private var realtimeDisconnectWorkItem: DispatchWorkItem?
     private var realtimeFlushTimeoutWorkItem: DispatchWorkItem?
     private var realtimeFlushDebounceWorkItem: DispatchWorkItem?
@@ -222,8 +221,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         isWaitingForRealtimeFlush = false
         liveTranscript = ""
         liveTranscriptWords = []
-        realtimeItemOrder = []
-        realtimeItemTexts = [:]
+        realtimeTranscriptAccumulator.reset()
         realtimeStatusText = nil
         isRealtimeConnected = false
         isRealtimeFallbackActive = false
@@ -231,83 +229,18 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     }
 
     private func updateLiveTranscript(itemID: String, text: String) {
-        registerRealtimeItemIfNeeded(itemID)
-
-        let current = realtimeItemTexts[itemID] ?? ""
-        realtimeItemTexts[itemID] = mergedRealtimeItemText(current: current, incoming: text)
-
+        realtimeTranscriptAccumulator.mergeDelta(itemID: itemID, text: text)
         refreshLiveTranscript()
     }
 
     private func finalizeLiveTranscript(itemID: String, transcript: String) {
-        let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-
-        registerRealtimeItemIfNeeded(itemID)
-        realtimeItemTexts[itemID] = trimmed
+        realtimeTranscriptAccumulator.finalize(itemID: itemID, transcript: transcript)
         refreshLiveTranscript()
     }
 
-    private func registerRealtimeItemIfNeeded(_ itemID: String) {
-        if !realtimeItemOrder.contains(itemID) {
-            realtimeItemOrder.append(itemID)
-        }
-    }
-
-    private func mergedRealtimeItemText(current: String, incoming: String) -> String {
-        let trimmedCurrent = current.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedIncoming = incoming.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedIncoming.isEmpty else { return trimmedCurrent }
-        guard !trimmedCurrent.isEmpty else { return trimmedIncoming }
-
-        if trimmedIncoming.hasPrefix(trimmedCurrent) {
-            return trimmedIncoming
-        }
-
-        // Some realtime updates can revise already emitted words.
-        // Prefer replacement when an incoming phrase overlaps substantially.
-        let incomingWords = trimmedIncoming.split(whereSeparator: \.isWhitespace)
-        if incomingWords.count >= 3 && wordOverlapRatio(between: trimmedCurrent, and: trimmedIncoming) >= 0.45 {
-            return trimmedIncoming
-        }
-
-        return appendWithOverlap(current: trimmedCurrent, incoming: trimmedIncoming)
-    }
-
-    private func appendWithOverlap(current: String, incoming: String) -> String {
-        let maxOverlap = min(current.count, incoming.count)
-        guard maxOverlap > 0 else { return current + incoming }
-
-        for overlap in stride(from: maxOverlap, through: 1, by: -1) {
-            if current.suffix(overlap) == incoming.prefix(overlap) {
-                return current + incoming.dropFirst(overlap)
-            }
-        }
-
-        if incoming.first?.isPunctuation == true {
-            return current + incoming
-        }
-        return current + " " + incoming
-    }
-
-    private func wordOverlapRatio(between lhs: String, and rhs: String) -> Double {
-        let lhsWords = Set(lhs.lowercased().split(whereSeparator: \.isWhitespace).map(String.init))
-        let rhsWords = Set(rhs.lowercased().split(whereSeparator: \.isWhitespace).map(String.init))
-        guard !lhsWords.isEmpty, !rhsWords.isEmpty else { return 0 }
-
-        let intersection = lhsWords.intersection(rhsWords).count
-        let union = lhsWords.union(rhsWords).count
-        return union == 0 ? 0 : Double(intersection) / Double(union)
-    }
-
     private func refreshLiveTranscript() {
-        liveTranscript = realtimeItemOrder
-            .compactMap { realtimeItemTexts[$0]?.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .joined(separator: " ")
-        liveTranscriptWords = liveTranscript
-            .split(whereSeparator: { $0.isWhitespace || $0.isNewline })
-            .map(String.init)
+        liveTranscript = realtimeTranscriptAccumulator.transcript
+        liveTranscriptWords = realtimeTranscriptAccumulator.words
     }
 
     func usesFullTranscriptDisplay(for recording: Recording) -> Bool {
@@ -853,7 +786,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
             ])
             if let target = activeTargetTranslationLanguage, !target.isEmpty {
                 Task { @MainActor in
-                    let translated = await SummaryService.translate(text: text, to: target)
+                    let translated = await TranscriptLanguageProcessor.translate(text, to: target)
                     segment.status = "completed"
                     segment.text = translated
                     self.assignTitleIfNeeded(to: rec, from: translated)
@@ -928,7 +861,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                                 self?.clearErrorMessage()
                                 if let target = Languages.translationTarget(from: self?.sessionTranslationLanguage ?? Languages.autoCode) {
                                     Task { @MainActor in
-                                        let translated = await SummaryService.translate(text: text, to: target)
+                                        let translated = await TranscriptLanguageProcessor.translate(text, to: target)
                                         segment.status = "completed"
                                         segment.text = translated
                                         try? self?.modelContext.save()
@@ -1320,7 +1253,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                 if let target {
                     let labeled = self.segments(for: recording)
                     for segment in labeled {
-                        let translatedText = await SummaryService.translate(text: segment.text, to: target)
+                        let translatedText = await TranscriptLanguageProcessor.translate(segment.text, to: target)
                         if !translatedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                             segment.text = translatedText
                         }
@@ -1500,8 +1433,6 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         }
     }
 }
-
-
 
 
 

@@ -9,12 +9,17 @@ import SwiftUI
 
 struct OnboardingCoordinatorView: View {
     @StateObject private var viewModel = OnboardingViewModel()
-    @EnvironmentObject private var paywallManager: PaywallManager
-    @State private var showPaywall = false
+    private let settingsStore = SettingsStore()
+    private let variant: OnboardingExperimentVariant
+
+    init() {
+        variant = OnboardingExperimentManager.shared.assignIfNeeded(
+            hasCompletedOnboarding: SettingsStore().hasCompletedOnboarding
+        ) ?? .control
+    }
 
     var body: some View {
-        ZStack {
-            Group {
+        Group {
                 switch viewModel.currentStep {
                 case .introduction:
                     IntroductionScreen {
@@ -68,51 +73,54 @@ struct OnboardingCoordinatorView: View {
                     .transition(.opacity.combined(with: .move(edge: .trailing)))
 
                 case .microphone:
-                    OnboardingPermissionView(
-                        isRequesting: viewModel.isRequestingMicrophonePermission,
-                        onAllow: {
-                            viewModel.requestMicrophonePermission {
-                                finishOnboarding()
-                            }
-                        },
-                        onSkip: {
-                            viewModel.skipMicrophonePermission {
-                                finishOnboarding()
-                            }
-                        },
-                        onBack: {
-                            viewModel.goBack()
+                    Group {
+                        if variant == .realtimeDemo {
+                            OnboardingRealtimeDemoView(
+                                userName: viewModel.userName,
+                                languageCode: viewModel.selectedAnswers["transcription_language"] ?? Languages.autoCode,
+                                translationLanguageCode: viewModel.selectedAnswers["translation_language"] ?? Languages.autoCode,
+                                onBack: { viewModel.goBack() },
+                                onFinish: { outcome in
+                                    finishOnboarding(outcome: outcome)
+                                }
+                            )
+                        } else {
+                            OnboardingPermissionView(
+                                isRequesting: viewModel.isRequestingMicrophonePermission,
+                                onAllow: {
+                                    viewModel.requestMicrophonePermission {
+                                        finishOnboarding(outcome: nil)
+                                    }
+                                },
+                                onSkip: {
+                                    viewModel.skipMicrophonePermission {
+                                        finishOnboarding(outcome: nil)
+                                    }
+                                },
+                                onBack: {
+                                    viewModel.goBack()
+                                }
+                            )
                         }
-                    )
+                    }
                     .transition(.opacity.combined(with: .move(edge: .trailing)))
 
                 case .completed:
                     Color.clear
                 }
-            }
-            .animation(.spring(response: 0.4, dampingFraction: 0.8), value: viewModel.currentStep)
-            .animation(.spring(response: 0.4, dampingFraction: 0.8), value: viewModel.currentQuestionIndex)
-
-            if showPaywall {
-                PayWallView(displayCloseButton: false)
-                    .transition(.opacity)
-                    .zIndex(1)
-            }
         }
+        .animation(.spring(response: 0.4, dampingFraction: 0.8), value: viewModel.currentStep)
+        .animation(.spring(response: 0.4, dampingFraction: 0.8), value: viewModel.currentQuestionIndex)
         .onAppear {
             HapticsManager.shared.prepare()
         }
-        .onChange(of: paywallManager.isPremium) { _, isPremium in
-            if isPremium {
-                showPaywall = false
-            }
-        }
     }
 
-    private func finishOnboarding() {
+    private func finishOnboarding(outcome: OnboardingDemoOutcome?) {
+        settingsStore.pendingPaywallSource = variant == .realtimeDemo
+            ? PaywallSource.onboardingRealtimeDemo.rawValue
+            : PaywallSource.onboardingControl.rawValue
+        settingsStore.onboardingDemoOutcome = outcome?.rawValue ?? "not_applicable"
         viewModel.completeOnboarding()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            showPaywall = true
-        }
     }
 }

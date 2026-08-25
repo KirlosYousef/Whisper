@@ -23,7 +23,7 @@ struct WhisperApp: App {
     /// Release builds always show the paywall until the user is premium.
     private var bypassForcedPaywall: Bool {
         #if DEBUG
-        true
+        !ProcessInfo.processInfo.arguments.contains("-forcePaywall")
         #else
         false
         #endif
@@ -40,6 +40,10 @@ struct WhisperApp: App {
             return !paywallManager.isPremium
         }
         return !paywallManager.isPremium
+    }
+
+    private var paywallSource: PaywallSource {
+        PaywallSource(rawValue: settingsStore.pendingPaywallSource) ?? .mainApp
     }
     
     static let sharedModelContainer: ModelContainer = {
@@ -108,18 +112,19 @@ struct WhisperApp: App {
                     }
                     .onChange(of: paywallManager.isPremium) { _, isPremium in
                         if isPremium {
-                            AnalyticsService.shared.trackEvent("Premium Activated", properties: nil)
                             HapticsManager.shared.notification(.success)
                         }
                     }
                     
                     if shouldShowForcedPaywall {
-                        PayWallView()
-                            .onAppear {
-                                AnalyticsService.shared.trackEvent("Paywall Shown", properties: [
-                                    "source": "main_app"
-                                ])
+                        PayWallView(
+                            displayCloseButton: false,
+                            source: paywallSource,
+                            demoOutcome: settingsStore.onboardingDemoOutcome,
+                            onImpressionTracked: {
+                                settingsStore.pendingPaywallSource = ""
                             }
+                        )
                     }
 
                     if lovePromptManager.isPresented
@@ -140,8 +145,12 @@ struct WhisperApp: App {
                 }
             }
             .onAppear {
-                PaywallManager.shared.setup()
                 AnalyticsService.shared.initialize()
+                _ = OnboardingExperimentManager.shared.assignIfNeeded(
+                    hasCompletedOnboarding: settingsStore.hasCompletedOnboarding
+                )
+                OnboardingExperimentManager.shared.registerWithAnalyticsIfAssigned()
+                PaywallManager.shared.setup()
                 AnalyticsService.shared.trackEvent("App Launched", properties: [
                     "has_completed_onboarding": settingsStore.hasCompletedOnboarding
                 ])

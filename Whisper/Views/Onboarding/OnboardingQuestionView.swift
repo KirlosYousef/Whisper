@@ -60,27 +60,15 @@ struct OnboardingQuestionView: View {
 
     var body: some View {
         VStack(spacing: 20) {
-            HStack(alignment: .center, spacing: 12) {
-                Button(action: {
-                    HapticsManager.shared.impact(.light)
-                    onBack()
-                }) {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundColor(.primary)
-                        .frame(width: 44, height: 44)
-                }
-                .buttonStyle(.plain)
+            VStack(spacing: 8) {
+                ProgressView(value: progress)
+                    .progressViewStyle(LinearProgressViewStyle(tint: primaryColor))
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 4)
 
-                VStack(spacing: 8) {
-                    ProgressView(value: progress)
-                        .progressViewStyle(LinearProgressViewStyle(tint: primaryColor))
-                        .frame(height: 4)
-
-                    Text(progressText)
-                        .font(.app(.medium, size: 14))
-                        .foregroundColor(.secondary)
-                }
+                Text(progressText)
+                    .font(.app(.medium, size: 14))
+                    .foregroundColor(.secondary)
             }
             .padding(.horizontal)
 
@@ -134,22 +122,42 @@ struct OnboardingQuestionView: View {
             .scrollDismissesKeyboard(.interactively)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            Button(action: {
-                isSearchFocused = false
-                HapticsManager.shared.impact(.medium)
-                onNext()
-            }) {
-                Text("Next")
-                    .font(.app(.semibold, size: 17))
-                    .foregroundColor(canProceed ? (colorScheme == .dark ? .black : .white) : .secondary)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 56)
-                    .background(
-                        canProceed ? primaryColor : Color.gray.opacity(0.3)
-                    )
-                    .cornerRadius(AppTheme.cornerRadius)
+            HStack {
+                Button {
+                    isSearchFocused = false
+                    onBack()
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 19, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .frame(width: 56, height: 56)
+                        .background(Color.primary.opacity(0.07))
+                        .clipShape(RoundedRectangle(cornerRadius: AppTheme.cornerRadius, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: AppTheme.cornerRadius, style: .continuous)
+                                .stroke(AppTheme.cardStroke, lineWidth: 1)
+                        )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Previous question")
+
+                Spacer()
+
+                Button {
+                    isSearchFocused = false
+                    onNext()
+                } label: {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 19, weight: .bold))
+                        .foregroundStyle(canProceed ? (colorScheme == .dark ? .black : .white) : .secondary)
+                        .frame(width: 56, height: 56)
+                        .background(canProceed ? primaryColor : Color.gray.opacity(0.3))
+                        .clipShape(RoundedRectangle(cornerRadius: AppTheme.cornerRadius, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .disabled(!canProceed)
+                .accessibilityLabel("Next question")
             }
-            .disabled(!canProceed)
             .padding(.horizontal)
             .padding(.bottom, 32)
         }
