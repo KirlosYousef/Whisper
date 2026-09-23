@@ -41,6 +41,7 @@ struct OnboardingRealtimeDemoView: View {
                 .padding(.horizontal, 20)
                 .padding(.top, 4)
                 .padding(.bottom, 24)
+                .animation(.spring(response: 0.45, dampingFraction: 0.86), value: viewModel.phase)
             }
 
             bottomActions
@@ -60,7 +61,10 @@ struct OnboardingRealtimeDemoView: View {
         }
         .background(AppTheme.background(colorScheme).ignoresSafeArea())
         .sheet(isPresented: $showAskAI) {
-            OnboardingAskAIView(viewModel: viewModel)
+            AskAIConversationView(
+                transcript: viewModel.transcript,
+                context: .onboarding
+            )
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
         }
@@ -128,8 +132,13 @@ struct OnboardingRealtimeDemoView: View {
         switch viewModel.phase {
         case .introduction, .ready, .requestingPermission:
             readyContent
-        case .connecting, .recording, .finishing:
+        case .connecting:
+            SessionStatusView(kind: .preparing)
+                .transition(.opacity.combined(with: .scale(scale: 0.98)))
+        case .recording:
             recordingContent
+        case .finishing:
+            finishingContent
         case .success:
             successContent
         case .shortTranscript, .failure:
@@ -201,10 +210,25 @@ struct OnboardingRealtimeDemoView: View {
             LiveTranscriptView(
                 words: viewModel.words,
                 isConnected: viewModel.isRealtimeConnected,
-                isRecording: viewModel.phase != .finishing,
+                isRecording: true,
                 reportsBottomPosition: false
             )
             .transition(.opacity.combined(with: .scale(scale: 0.98)))
+        }
+    }
+
+    private var finishingContent: some View {
+        VStack(spacing: 14) {
+            SessionStatusView(kind: .finishing)
+            if !viewModel.words.isEmpty {
+                LiveTranscriptView(
+                    words: viewModel.words,
+                    isConnected: false,
+                    isRecording: false,
+                    reportsBottomPosition: false
+                )
+                .transition(.opacity)
+            }
         }
     }
 
@@ -369,8 +393,15 @@ struct OnboardingRealtimeDemoView: View {
             }
             .frame(height: 112)
         case .connecting:
-            ProgressView("Preparing realtime…")
-                .frame(height: 112)
+            VStack(spacing: 8) {
+                MicButton(isRecording: false, audioLevel: 0, isPreparing: true) {}
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+                Text("You’ll feel a tap when it’s time to speak")
+                    .font(.app(.medium, size: 13))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
         case .recording:
             VStack(spacing: 6) {
                 ZStack {
@@ -393,8 +424,15 @@ struct OnboardingRealtimeDemoView: View {
                     .foregroundStyle(.secondary)
             }
         case .finishing:
-            ProgressView("Finishing your transcript…")
-                .frame(height: 112)
+            VStack(spacing: 8) {
+                Text("Almost there")
+                    .font(.app(.semibold, size: 15))
+                Text("Keeping the last words from your live session")
+                    .font(.app(.medium, size: 13))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            .frame(height: 112)
         case .success:
             primaryButton("Continue", icon: "arrow.right") {
                 HapticsManager.shared.impact(.medium)
@@ -434,18 +472,11 @@ struct OnboardingRealtimeDemoView: View {
     }
 
     private var recordingTitle: String {
-        switch viewModel.phase {
-        case .connecting: "Getting ready…"
-        case .finishing: "Making it useful…"
-        default: viewModel.isRealtimeConnected ? "I’m listening" : "Getting ready…"
-        }
+        viewModel.isRealtimeConnected ? "I’m listening" : "Getting ready…"
     }
 
     private var recordingSubtitle: String {
-        if viewModel.phase == .finishing {
-            return "Finishing your realtime transcript"
-        }
-        return viewModel.isRealtimeConnected
+        viewModel.isRealtimeConnected
             ? "Speak naturally — your words will appear below"
             : "Connecting to realtime transcription…"
     }
@@ -470,243 +501,6 @@ struct OnboardingRealtimeDemoView: View {
             .background(primaryColor, in: RoundedRectangle(cornerRadius: AppTheme.cornerRadius, style: .continuous))
         }
         .buttonStyle(.plain)
-    }
-}
-
-private struct OnboardingAskAIView: View {
-    @ObservedObject var viewModel: OnboardingDemoViewModel
-    @Environment(\.dismiss) private var dismiss
-    @Environment(\.colorScheme) private var colorScheme
-    @FocusState private var isComposerFocused: Bool
-    @State private var question = ""
-
-    private let suggestions = [
-        "What should I remember?",
-        "What is the next action?"
-    ]
-
-    var body: some View {
-        VStack(spacing: 0) {
-            askHeader
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 22) {
-                    if viewModel.isAskingAI {
-                        thinkingState
-                    } else if !viewModel.askAIAnswer.isEmpty {
-                        answerCard
-                    } else {
-                        emptyState
-                    }
-                }
-                .padding(20)
-                .padding(.bottom, 20)
-            }
-
-            suggestionsSection
-                .padding(.horizontal, 16)
-                .padding(.top, 10)
-                .padding(.bottom, 8)
-                .background(AppTheme.background(colorScheme))
-
-            composer
-        }
-        .background(AppTheme.background(colorScheme).ignoresSafeArea())
-    }
-
-    private var askHeader: some View {
-        HStack(spacing: 12) {
-            ZStack {
-                Circle()
-                    .fill(Color.primary.opacity(0.07))
-                    .frame(width: 42, height: 42)
-                Image(systemName: "sparkles")
-                    .font(.system(size: 18, weight: .semibold))
-            }
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Ask AI")
-                    .font(.app(.bold, size: 20))
-                Text("Ask questions or take action on this transcript")
-                    .font(.app(.regular, size: 12))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-
-            Spacer()
-
-            Button("Done") {
-                dismiss()
-            }
-            .font(.app(.semibold, size: 15))
-            .foregroundStyle(.primary)
-            .padding(.horizontal, 15)
-            .frame(height: 38)
-            .background(Color.primary.opacity(0.07), in: Capsule())
-        }
-        .padding(.horizontal, 20)
-        .padding(.top, 18)
-        .padding(.bottom, 14)
-        .background(AppTheme.background(colorScheme))
-        .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(Color.primary.opacity(0.06))
-                .frame(height: 1)
-        }
-    }
-
-    private var emptyState: some View {
-        VStack(spacing: 12) {
-            ZStack {
-                Circle()
-                    .fill(Color.primary.opacity(0.05))
-                    .frame(width: 82, height: 82)
-                Image(systemName: "questionmark.bubble")
-                    .font(.system(size: 30, weight: .medium))
-            }
-            Text("What would you like to know?")
-                .font(.app(.semibold, size: 20))
-            Text("Revera can answer questions and find the next action from your transcript.")
-                .font(.app(.regular, size: 14))
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 12)
-        .accessibilityElement(children: .combine)
-    }
-
-    private var thinkingState: some View {
-        HStack(spacing: 12) {
-            ProgressView()
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Thinking…")
-                    .font(.app(.semibold, size: 16))
-                Text("Reading your transcript")
-                    .font(.app(.regular, size: 13))
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(18)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(actionCardBackground)
-    }
-
-    private var answerCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                Image(systemName: "sparkles")
-                Text("Answer")
-                    .font(.app(.semibold, size: 14))
-            }
-            Text(viewModel.askAIAnswer)
-                .font(.app(.regular, size: 17))
-                .lineSpacing(5)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(18)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(actionCardBackground)
-        .accessibilityElement(children: .combine)
-    }
-
-    private var suggestionsSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Try asking")
-                .font(.app(.semibold, size: 13))
-                .foregroundStyle(.secondary)
-
-            ForEach(Array(suggestions.enumerated()), id: \.offset) { index, suggestion in
-                Button {
-                    viewModel.askAI(
-                        question: suggestion,
-                        source: index == 0 ? "shortcut_remember" : "shortcut_next_action"
-                    )
-                    question = ""
-                    isComposerFocused = false
-                } label: {
-                    HStack(spacing: 12) {
-                        Image(systemName: index == 0 ? "bookmark" : "checklist")
-                            .font(.system(size: 17, weight: .medium))
-                            .frame(width: 24)
-                        Text(suggestion)
-                            .font(.app(.medium, size: 15))
-                            .foregroundStyle(.primary)
-                        Spacer()
-                        Image(systemName: "arrow.up.right")
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.horizontal, 16)
-                    .frame(minHeight: 52)
-                    .background(actionCardBackground)
-                }
-                .buttonStyle(.plain)
-                .disabled(viewModel.isAskingAI)
-            }
-        }
-    }
-
-    private var composer: some View {
-        HStack(alignment: .bottom, spacing: 10) {
-            TextField("Ask anything…", text: $question, axis: .vertical)
-                .font(.app(.regular, size: 16))
-                .lineLimit(1...4)
-                .focused($isComposerFocused)
-                .submitLabel(.send)
-                .onSubmit { submitQuestion() }
-                .padding(.horizontal, 15)
-                .padding(.vertical, 12)
-                .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .stroke(Color.primary.opacity(0.09), lineWidth: 1)
-                )
-
-            Button {
-                submitQuestion()
-            } label: {
-                Image(systemName: "arrow.up")
-                    .font(.system(size: 17, weight: .bold))
-                    .foregroundStyle(colorScheme == .dark ? .black : .white)
-                    .frame(width: 44, height: 44)
-                    .background(Color.primary, in: Circle())
-            }
-            .buttonStyle(.plain)
-            .disabled(!canSubmit)
-            .opacity(canSubmit ? 1 : 0.32)
-            .accessibilityLabel("Ask AI")
-        }
-        .padding(.horizontal, 16)
-        .padding(.top, 12)
-        .padding(.bottom, 12)
-        .background(AppTheme.background(colorScheme).ignoresSafeArea(edges: .bottom))
-        .overlay(alignment: .top) {
-            Rectangle()
-                .fill(Color.primary.opacity(0.06))
-                .frame(height: 1)
-        }
-    }
-
-    private var actionCardBackground: some View {
-        RoundedRectangle(cornerRadius: AppTheme.cornerRadius, style: .continuous)
-            .fill(colorScheme == .dark ? Color.white.opacity(0.07) : Color.black.opacity(0.04))
-            .overlay(
-                RoundedRectangle(cornerRadius: AppTheme.cornerRadius, style: .continuous)
-                    .stroke(AppTheme.cardStroke, lineWidth: 1)
-            )
-    }
-
-    private var canSubmit: Bool {
-        !question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !viewModel.isAskingAI
-    }
-
-    private func submitQuestion() {
-        guard canSubmit else { return }
-        let submittedQuestion = question
-        question = ""
-        viewModel.askAI(question: submittedQuestion, source: "composer")
-        isComposerFocused = false
     }
 }
 

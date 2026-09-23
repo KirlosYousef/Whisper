@@ -16,10 +16,17 @@ struct RecordScreen: View {
 		ZStack {
 			VStack(spacing: 16) {
 				headerBanners
-				segmentsList
+                if viewModel.isPreparingRealtime {
+                    SessionStatusView(kind: .preparing)
+                        .padding(.top, 12)
+                        .transition(.opacity.combined(with: .scale(scale: 0.98)))
+                } else {
+                    segmentsList
+                }
 				Spacer(minLength: 0)
 			}
 			.padding(.horizontal)
+            .animation(.spring(response: 0.45, dampingFraction: 0.86), value: viewModel.isPreparingRealtime)
 			
 			// Mic button floating center -> bottom when docked
 			micArea
@@ -36,6 +43,13 @@ struct RecordScreen: View {
 				}
 			}
 		}
+        .onChange(of: viewModel.isPreparingRealtime) { _, preparing in
+            if preparing {
+                withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                    docked = true
+                }
+            }
+        }
 		.onAppear {
 			viewModel.checkNetworkStatus()
 			AnalyticsService.shared.trackEvent("Record Screen Viewed", properties: [
@@ -49,7 +63,7 @@ struct RecordScreen: View {
 		}
 		.overlay(alignment: .bottom) {
 			VStack(spacing: 12) {
-                if !viewModel.isRecording {
+                if !viewModel.isRecording && !viewModel.isStartingRecording && !viewModel.isFinishingRealtime {
                     Menu {
                         Picker("Transcription mode", selection: Binding(
                             get: { viewModel.preRecordingTranscriptionMode },
@@ -80,7 +94,7 @@ struct RecordScreen: View {
                     }
                 }
 
-                if !viewModel.isRecording {
+                if !viewModel.isRecording && !viewModel.isStartingRecording && !viewModel.isFinishingRealtime {
                     TranslationChip(language: $viewModel.sessionTranslationLanguage) { newValue in
                         AnalyticsService.shared.trackEvent("Session Translation Language Changed", properties: [
                             "language": newValue
@@ -104,7 +118,7 @@ struct RecordScreen: View {
         if viewModel.isInterrupted {
             BannerView(icon: "exclamationmark.triangle.fill", title: "Recording Interrupted", subtitle: viewModel.interruptionMessage, color: .orange)
         }
-        if let status = viewModel.realtimeStatusText {
+        if let status = viewModel.realtimeStatusText, !viewModel.isPreparingRealtime, !viewModel.isFinishingRealtime {
             BannerView(
                 icon: viewModel.isRealtimeConnected ? "waveform" : "arrow.triangle.2.circlepath",
                 title: viewModel.isRealtimeConnected ? "Realtime Live" : "Status",
@@ -146,6 +160,12 @@ struct RecordScreen: View {
                     let building = viewModel.isBuildingSpeakerTranscript(for: rec)
                     let speakerTurns = viewModel.usesSpeakerTurnDisplay(for: rec)
                     let namesJSON = rec.speakerDisplayNamesJSON
+
+                    if viewModel.isFinishingRealtime {
+                        SessionStatusView(kind: .finishing, style: .compact)
+                            .padding(.bottom, 8)
+                            .transition(.opacity.combined(with: .scale(scale: 0.98)))
+                    }
 
                     Group {
                         if building {
@@ -198,6 +218,7 @@ struct RecordScreen: View {
                     .animation(.spring(response: 0.5, dampingFraction: 0.86), value: building)
                     .animation(.spring(response: 0.5, dampingFraction: 0.86), value: speakerTurns)
                 }
+                .animation(.spring(response: 0.45, dampingFraction: 0.86), value: viewModel.isFinishingRealtime)
                 // Keep bottom content visible above mic and translation chip
                 .padding(.bottom, docked ? 220 : 120)
             }
@@ -409,7 +430,12 @@ struct RecordScreen: View {
     private var micArea: some View {
 		VStack {
 			HStack(spacing: 12) {
-				MicButton(isRecording: viewModel.isRecording || viewModel.isStartingRecording, audioLevel: viewModel.audioLevel) {
+				MicButton(
+                    isRecording: viewModel.isRecording,
+                    audioLevel: viewModel.audioLevel,
+                    isPreparing: viewModel.isStartingRecording || viewModel.isFinishingRealtime
+                ) {
+                    if viewModel.isFinishingRealtime { return }
 					if viewModel.isRecording || viewModel.isStartingRecording {
 						viewModel.stopRecording()
 					} else {
@@ -421,6 +447,7 @@ struct RecordScreen: View {
 						}
 					}
 				}
+                .allowsHitTesting(!viewModel.isFinishingRealtime)
                 
                 if viewModel.isRecording {
                     Button {

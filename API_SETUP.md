@@ -1,66 +1,42 @@
-# API Key Setup
+# AI API setup
 
-This app requires an OpenAI API key for audio transcription functionality.
+The OpenAI API key must not be placed in the iOS app or in `Whisper/Config.plist`. A shipped app can be inspected, even when the plist is ignored by Git.
 
-## Setup Instructions
+## Deploy the Worker
 
-1. **Get an OpenAI API Key**
-   - Go to [OpenAI API Keys](https://platform.openai.com/api-keys)
-   - Create a new API key
-   - Copy the key (it starts with `sk-`)
+From the repository root:
 
-2. **Configure the API Key**
-   - Open `Whisper/Config.plist`
-   - Replace `YOUR_API_KEY_HERE` with your actual API key
-   - Save the file
-
-3. **Build and Test**
-   - Clean build folder in Xcode (Product → Clean Build Folder)
-   - Build and run the app
-   - Check console output for: `✅ API key loaded successfully`
-
-## Security Features
-
-- **Secure Storage**: API key is stored in `Config.plist` which is excluded from git
-- **Fallback Mode**: If API key is missing, app uses local speech recognition
-- **No Hardcoding**: API key is never hardcoded in source code
-- **Environment Isolation**: Each developer can have their own API key
-
-## Example Config.plist
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>OpenAIAPIKey</key>
-    <string>sk-your-actual-api-key-here</string>
-</dict>
-</plist>
+```sh
+cd worker
+npm install
+npx wrangler login
+npx wrangler secret put OPENAI_API_KEY
+npm run deploy
 ```
 
-## Troubleshooting
+When `wrangler secret put OPENAI_API_KEY` prompts for a value, paste the replacement OpenAI API key there. The value is stored as a Cloudflare Worker secret and is not written into this repository.
 
-### API Key Not Found
-If you see: `❌ Config.plist not found in app bundle`
-- Make sure `Config.plist` is added to Xcode project
-- Clean and rebuild the project
+The deploy output includes a URL similar to:
 
-### API Key Not Loading
-If you see: `⚠️ API key not properly configured`
-- Check that the API key in `Config.plist` is not `YOUR_API_KEY_HERE`
-- Verify the API key starts with `sk-`
-- Ensure no extra characters or spaces
+```text
+https://whisper-openai-proxy.<account>.workers.dev
+```
 
-### Fallback Mode
-If API key is not configured, the app will:
-- Use local speech recognition (SFSpeechRecognizer)
-- Work offline but with lower accuracy
-- Show warning messages in console
+Copy that URL into `OpenAIConfiguration.workerBaseURL` in `Whisper/Services/RealtimeTranscriptionService.swift`. Do not paste the OpenAI key into the iOS project.
 
-## Best Practices
+## Verify the setup
 
-- **Never commit API keys** to version control
-- **Use different keys** for development and production
-- **Rotate keys regularly** for security
-- **Monitor usage** in OpenAI dashboard 
+```sh
+cd worker
+npm run typecheck
+npm run deploy
+```
+
+The iOS app uses the Worker for file transcription, diarization, summaries, translation, transcript chat, keyword extraction, and realtime transcription. The Worker only forwards supported endpoints and removes any client-supplied OpenAI authorization header before adding its own server-side secret.
+
+## Security and cost
+
+- Revoke the leaked OpenAI key before creating the replacement.
+- Set an OpenAI project spending limit and usage alert.
+- Do not commit `worker/.dev.vars` or any API key.
+- This basic proxy hides the OpenAI key but does not provide strong app authentication. Add App Attest or user authentication before broad public distribution.

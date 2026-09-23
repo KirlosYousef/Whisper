@@ -45,6 +45,9 @@ Config.plist
 Secrets.plist
 APIKeys.plist
 Secrets.xcconfig
+worker/.dev.vars
+worker/node_modules/
+worker/.wrangler/
 
 # Logs
 *.log

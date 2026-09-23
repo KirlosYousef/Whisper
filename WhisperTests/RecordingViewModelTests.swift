@@ -27,6 +27,9 @@ final class RecordingViewModelTests: XCTestCase {
     
     func testInitialState() throws {
         XCTAssertFalse(viewModel.isRecording)
+        XCTAssertFalse(viewModel.isStartingRecording)
+        XCTAssertFalse(viewModel.isPreparingRealtime)
+        XCTAssertFalse(viewModel.isFinishingRealtime)
         XCTAssertFalse(viewModel.isPaused)
         XCTAssertTrue(viewModel.recordings.isEmpty)
         XCTAssertFalse(viewModel.permissionDenied)

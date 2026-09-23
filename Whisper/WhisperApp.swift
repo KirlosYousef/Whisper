@@ -129,6 +129,8 @@ struct WhisperApp: App {
 
                     if lovePromptManager.isPresented
                         && !viewModel.isRecording
+                        && !viewModel.isStartingRecording
+                        && !viewModel.isFinishingRealtime
                         && viewModel.identifyingSpeakerRecordingIds.isEmpty
                         && !shouldShowForcedPaywall {
                         LovePromptView()

@@ -9,52 +9,13 @@ import Foundation
 import Speech
 
 class TranscriptionService {
-    private let apiKey: String
-    private let endpoint = URL(string: "https://api.openai.com/v1/audio/transcriptions")!
+    private let endpoint = OpenAIConfiguration.audioTranscriptionsURL
     private let maxRetries = 5
     
     // Optional languages for transcription (empty = auto-detect with device hints)
     var preferredLanguages: [String] = []
     
     init() {
-        // Load API key from Config.plist
-        print("🔍 Attempting to load API key from Config.plist...")
-        
-        if let path = Bundle.main.path(forResource: "Config", ofType: "plist") {
-            print("✅ Found Config.plist at: \(path)")
-            
-            if let config = NSDictionary(contentsOfFile: path) {
-                print("✅ Successfully loaded Config.plist")
-                
-                if let key = config["OpenAIAPIKey"] as? String {
-                    print("✅ Found OpenAIAPIKey in Config.plist")
-                    
-                    if key != OpenAIConfiguration.placeholderAPIKey && !key.isEmpty {
-                        self.apiKey = key
-                        print("✅ API key loaded successfully: \(String(key.prefix(10)))...")
-                    } else {
-                        self.apiKey = OpenAIConfiguration.placeholderAPIKey
-                        print("⚠️  API key is placeholder or empty")
-                    }
-                } else {
-                    self.apiKey = OpenAIConfiguration.placeholderAPIKey
-                    print("❌ OpenAIAPIKey not found in Config.plist")
-                }
-            } else {
-                self.apiKey = OpenAIConfiguration.placeholderAPIKey
-                print("❌ Failed to load Config.plist as NSDictionary")
-            }
-        } else {
-            self.apiKey = OpenAIConfiguration.placeholderAPIKey
-            print("❌ Config.plist not found in app bundle")
-            print("   Make sure Config.plist is added to the Xcode project")
-        }
-        
-        if self.apiKey == OpenAIConfiguration.placeholderAPIKey {
-            print("⚠️  Warning: API key not properly configured")
-            print("   Please add your OpenAI API key to Whisper/Config.plist")
-            print("   The app will use local speech recognition as fallback")
-        }
     }
     
     func requestSpeechRecognitionPermission() {
@@ -124,15 +85,14 @@ class TranscriptionService {
     }
     
     private func transcribeWithOpenAI(audioURL: URL, model: String, completion: @escaping (String?, Error?) -> Void) {
-        // Check if API key is properly configured
-        guard apiKey != OpenAIConfiguration.placeholderAPIKey && !apiKey.isEmpty else {
+        // Check if the Worker URL is configured.
+        guard OpenAIConfiguration.isConfigured else {
             completion(nil, TranscriptionError.apiKeyNotConfigured)
             return
         }
         
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         let boundary = "Boundary-\(UUID().uuidString)"
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
 
@@ -221,7 +181,7 @@ class TranscriptionService {
     }
 
     func diarize(audioURL: URL, completion: @escaping (Result<DiarizationResult, Error>) -> Void) {
-        guard apiKey != OpenAIConfiguration.placeholderAPIKey && !apiKey.isEmpty else {
+        guard OpenAIConfiguration.isConfigured else {
             completion(.failure(TranscriptionError.apiKeyNotConfigured))
             return
         }
@@ -255,14 +215,13 @@ class TranscriptionService {
     }
 
     private func diarizeWithOpenAI(audioURL: URL, completion: @escaping (Result<DiarizationResult, Error>) -> Void) {
-        guard apiKey != OpenAIConfiguration.placeholderAPIKey && !apiKey.isEmpty else {
+        guard OpenAIConfiguration.isConfigured else {
             completion(.failure(TranscriptionError.apiKeyNotConfigured))
             return
         }
 
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         let boundary = "Boundary-\(UUID().uuidString)"
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         request.timeoutInterval = 120
@@ -367,7 +326,7 @@ enum TranscriptionError: LocalizedError {
         case .fallbackUnavailable:
             return "Local transcription not available"
         case .apiKeyNotConfigured:
-            return "OpenAI API key not configured. Please add your API key to Config.plist"
+            return "AI service is not configured. Please update the Worker URL."
         }
     }
 }

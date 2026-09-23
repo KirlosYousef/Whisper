@@ -1,0 +1,303 @@
+{
+  "app": {
+    "name": "Revera AI",
+    "bundle_id": "KirlosYousef.Whisper",
+    "context": "An iOS voice recorder and transcription app with live transcription, searchable transcript history, transcript summaries, keywords, action items, transcript-based AI conversations, speaker identification, and optional translation.",
+    "target_audience": "People recording meetings and interviews, personal notes and ideas, language-learning material, or content-creation thoughts; these are the use cases offered in onboarding.",
+    "competitors": [],
+    "notes": [
+      "User requests a fancy, creative, feature-led App Store campaign with a strong hook and especially compelling first three screens; flying objects are acceptable if they reinforce the feature.",
+      "Use GPT Image, not Gemini.",
+      "The four original feature references are low-resolution legacy captures (250-264 px wide); the Ask or Act capture is superseded by the newer full-resolution Ask AI reference.",
+      "Keep the phone supportive rather than dominant, give feature-led copy and breakouts the hierarchy, use 9:41 in every status bar, and keep a consistent toolbar/chrome treatment.",
+      "Mention speaker identification as a concise feature callout without fabricating a speaker-identification screenshot."
+    ]
+  },
+  "benefits": [
+    {
+      "order": 1,
+      "verb": "CATCH",
+      "descriptor": "EVERY THOUGHT LIVE",
+      "headline": "CATCH EVERY THOUGHT LIVE",
+      "reasoning": "Leads with the core live-transcription benefit and gives the first frame an urgent, memorable hook."
+    },
+    {
+      "order": 2,
+      "verb": "TURN",
+      "descriptor": "RECORDINGS INTO ACTION",
+      "headline": "TURN RECORDINGS INTO ACTION",
+      "reasoning": "Shows the outcome of summaries, extracted keywords, and action items; include speaker identification as a small supporting feature callout."
+    },
+    {
+      "order": 3,
+      "verb": "ASK",
+      "descriptor": "YOUR TRANSCRIPT ANYTHING",
+      "headline": "ASK YOUR TRANSCRIPT ANYTHING",
+      "reasoning": "Makes transcript-grounded AI assistance the third high-impact benefit and pairs with the new Ask AI screen."
+    },
+    {
+      "order": 4,
+      "verb": "FIND",
+      "descriptor": "ANY MOMENT FAST",
+      "headline": "FIND ANY MOMENT FAST",
+      "reasoning": "Expresses the practical value of searching a populated transcript library."
+    },
+    {
+      "order": 5,
+      "verb": "TRANSLATE",
+      "descriptor": "AS YOU LISTEN",
+      "headline": "TRANSLATE AS YOU LISTEN",
+      "reasoning": "Highlights the optional live translation control shown on the recording screen."
+    }
+  ],
+  "screenshot_analysis": [
+    {
+      "path": "/Users/kirlosyousef/Downloads/Revera - AppStore screenshots/Revera - AppStore screenshots.png",
+      "screen": "Record screen with transcript segments and a translation-language control",
+      "rating": "Usable",
+      "strengths": [
+        "Shows actual transcript content rather than an empty state.",
+        "Makes the translation option visible on the recording screen."
+      ],
+      "problems": [
+        "Only 255 x 547 pixels, so it is not a crisp final phone-screen source.",
+        "The device edges/content are clipped and the transcript text is too small for marketing use."
+      ],
+      "notes": "Use as a reference for live transcription and translation; replace with a clean current capture for final artwork."
+    },
+    {
+      "path": "/Users/kirlosyousef/Downloads/Revera - AppStore screenshots/Revera - AppStore screenshots-1.png",
+      "screen": "Record screen showing the Realtime Live state",
+      "rating": "Usable",
+      "strengths": [
+        "Communicates that transcription appears while recording.",
+        "The record/pause controls make the primary action recognizable."
+      ],
+      "problems": [
+        "Only 262 x 580 pixels and visibly clipped at the device edges.",
+        "The large empty transcript area weakens the feature story."
+      ],
+      "notes": "Reference only; final capture should show several readable live transcript lines and a tidy status area."
+    },
+    {
+      "path": "/Users/kirlosyousef/Downloads/Revera - AppStore screenshots/Revera - AppStore screenshots-2.png",
+      "screen": "Transcript detail with summary, keywords, action items, and playable segments",
+      "rating": "Usable",
+      "strengths": [
+        "Strong feature pairing for turning a recording into useful takeaways.",
+        "Shows several real product actions in one screen."
+      ],
+      "problems": [
+        "Only 250 x 556 pixels; labels and content are too small to enlarge cleanly.",
+        "The lower screen is clipped and the grayscale layout has little visual hierarchy."
+      ],
+      "notes": "Use a fresh detail capture with a concise summary, a few keywords, three action items, and a visible playback row; enlarge the takeaway cards in the marketing composition."
+    },
+    {
+      "path": "/Users/kirlosyousef/Downloads/Revera - AppStore screenshots/Revera - AppStore screenshots-3.png",
+      "screen": "Legacy Ask or Act prompt/result sheet",
+      "rating": "Retake",
+      "strengths": [
+        "Demonstrates the idea of transforming transcript context into an answer or useful action."
+      ],
+      "problems": [
+        "This is the old Ask or Act interface; the current checkout uses an Ask AI conversation screen.",
+        "Only 264 x 576 pixels, clipped, and not representative of the current interaction."
+      ],
+      "notes": "Replace for final pairing with the current Ask AI conversation: one transcript-specific user question, a concise response, and the Copy/Share actions visible, in light mode with a clean status bar."
+    },
+    {
+      "path": "/Users/kirlosyousef/Downloads/Revera - AppStore screenshots/Revera - AppStore screenshots-4.png",
+      "screen": "Populated transcript library with search and recordings in multiple languages",
+      "rating": "Usable",
+      "strengths": [
+        "Shows transcript search and a useful populated history.",
+        "The multilingual titles reinforce varied recording use cases."
+      ],
+      "problems": [
+        "Only 263 x 574 pixels and the device is clipped at the bottom.",
+        "Several rows are truncated, making the content look crowded."
+      ],
+      "notes": "Reference only; a final capture should have a clean status bar, readable populated rows, and the search field visible."
+    },
+    {
+      "path": "/Users/kirlosyousef/Downloads/IMG_2587.PNG",
+      "screen": "Current Ask AI empty conversation with transcript-specific prompt suggestions",
+      "rating": "Usable",
+      "strengths": [
+        "Full 1290 x 2796 source showing the current Ask AI header, Done control, suggestion cards, and composer.",
+        "The prompt suggestions clearly communicate what users can do with a transcript."
+      ],
+      "problems": [
+        "Status time is 2:13 rather than the requested shared 9:41.",
+        "Conversation is at the empty/suggestion state rather than showing a sample answer."
+      ],
+      "notes": "Use as the screen-3 source and preserve its current Ask AI layout; normalize status time to 9:41 and keep the same toolbar treatment across the campaign."
+    }
+  ],
+  "pairings": [
+    {
+      "benefit_order": 1,
+      "headline": "CATCH EVERY THOUGHT LIVE",
+      "screenshot_path": "/Users/kirlosyousef/Downloads/Revera - AppStore screenshots/Revera - AppStore screenshots-1.png",
+      "reasoning": "Realtime Live recording screen; creative transcript/sound-wave breakout will carry the message while the phone remains secondary."
+    },
+    {
+      "benefit_order": 2,
+      "headline": "TURN RECORDINGS INTO ACTION",
+      "screenshot_path": "/Users/kirlosyousef/Downloads/Revera - AppStore screenshots/Revera - AppStore screenshots-2.png",
+      "reasoning": "Shows summary, keywords, and action items; include a small textual speaker-identification callout without claiming it is visible in this capture."
+    },
+    {
+      "benefit_order": 3,
+      "headline": "ASK YOUR TRANSCRIPT ANYTHING",
+      "screenshot_path": "/Users/kirlosyousef/Developer/Whisper/screenshots/00-sources/03-ask-ai-time-9-41.png",
+      "reasoning": "Latest full-resolution Ask AI design; use its suggestion cards and consistent header as the screen reference, with status time standardized to 9:41."
+    },
+    {
+      "benefit_order": 4,
+      "headline": "FIND ANY MOMENT FAST",
+      "screenshot_path": "/Users/kirlosyousef/Downloads/Revera - AppStore screenshots/Revera - AppStore screenshots-4.png",
+      "reasoning": "Populated transcript library has the search field and varied recordings needed to support fast retrieval."
+    },
+    {
+      "benefit_order": 5,
+      "headline": "TRANSLATE AS YOU LISTEN",
+      "screenshot_path": "/Users/kirlosyousef/Downloads/Revera - AppStore screenshots/Revera - AppStore screenshots.png",
+      "reasoning": "Recording screen shows the translation-language control alongside transcript content."
+    }
+  ],
+  "brand_color": {
+    "name": "Electric Indigo",
+    "hex": "#4C3DFF",
+    "reasoning": "High-contrast flat campaign color complements Revera's monochrome interface and icon; use lime #D8FF63 sparingly for feature accents."
+  },
+  "generation": {
+    "target_display": "iPhone 6.7-inch portrait",
+    "dimensions": "1284 x 2778",
+    "items": [
+      {
+        "benefit_order": 1,
+        "headline": "CATCH EVERY THOUGHT LIVE",
+        "benefit_dir": "screenshots/01-catch-every-thought",
+        "chosen_version": "v4",
+        "final_path": "screenshots/final/01-catch-every-thought.jpg",
+        "source_screenshot": "/Users/kirlosyousef/Downloads/Revera - AppStore screenshots/Revera - AppStore screenshots-1.png",
+        "breakout_notes": "Feature-led live transcript and sound-wave composition; full device, 9:41, and Transcripts/Record/Settings toolbar visible.",
+        "status": "generated",
+        "feedback": ""
+      },
+      {
+        "benefit_order": 2,
+        "headline": "TURN RECORDINGS INTO ACTION",
+        "benefit_dir": "screenshots/02-turn-recordings-into-action",
+        "chosen_version": "v4",
+        "final_path": "screenshots/final/02-turn-recordings-into-action.jpg",
+        "source_screenshot": "/Users/kirlosyousef/Downloads/Revera - AppStore screenshots/Revera - AppStore screenshots-2.png",
+        "breakout_notes": "Summary and action-item takeaways lead; Identify Speakers is a supporting feature callout only; full device, 9:41, and the matching three-tab toolbar are visible.",
+        "status": "generated",
+        "feedback": ""
+      },
+      {
+        "benefit_order": 3,
+        "headline": "ASK YOUR TRANSCRIPT ANYTHING",
+        "benefit_dir": "screenshots/03-ask-transcript-anything",
+        "chosen_version": "v4",
+        "final_path": "screenshots/final/03-ask-transcript-anything.jpg",
+        "source_screenshot": "/Users/kirlosyousef/Developer/Whisper/screenshots/00-sources/03-ask-ai-time-9-41.png",
+        "breakout_notes": "Current Ask AI suggestion UI from the supplied full-resolution capture; full device and 9:41 visible, preserving the screen-specific Ask AI/Done header.",
+        "status": "generated",
+        "feedback": ""
+      },
+      {
+        "benefit_order": 4,
+        "headline": "FIND ANY MOMENT FAST",
+        "benefit_dir": "screenshots/04-find-any-moment-fast",
+        "chosen_version": "v4",
+        "final_path": "screenshots/final/04-find-any-moment-fast.jpg",
+        "source_screenshot": "/Users/kirlosyousef/Downloads/Revera - AppStore screenshots/Revera - AppStore screenshots-4.png",
+        "breakout_notes": "Search field and transcript-library snippets carry the feature story; full device, 9:41, and matching three-tab toolbar visible.",
+        "status": "generated",
+        "feedback": ""
+      },
+      {
+        "benefit_order": 5,
+        "headline": "TRANSLATE AS YOU LISTEN",
+        "benefit_dir": "screenshots/05-translate-as-you-listen",
+        "chosen_version": "v4",
+        "final_path": "screenshots/final/05-translate-as-you-listen.jpg",
+        "source_screenshot": "/Users/kirlosyousef/Downloads/Revera - AppStore screenshots/Revera - AppStore screenshots.png",
+        "breakout_notes": "Large translation-language control and transcript panel lead; full device, 9:41, and matching three-tab toolbar visible.",
+        "status": "generated",
+        "feedback": ""
+      }
+    ],
+    "showcase_path": "",
+    "variants": {
+      "ipad_13": {
+        "target_display": "iPad 13-inch portrait",
+        "dimensions": "2064 x 2752",
+        "notes": "Adapt the five existing iPhone campaign designs to a tablet composition; retain Electric Indigo/lime styling, headlines, 9:41, and consistent app navigation where applicable.",
+        "items": [
+          {
+            "benefit_order": 1,
+            "headline": "CATCH EVERY THOUGHT LIVE",
+            "benefit_dir": "screenshots/ipad-13/01-catch-every-thought",
+            "chosen_version": "v3",
+            "final_path": "screenshots/ipad-13/final/01-catch-every-thought.jpg",
+            "source_screenshot": "/Users/kirlosyousef/Downloads/Revera - AppStore screenshots/Revera - AppStore screenshots-1.png",
+            "breakout_notes": "Live transcript and waveform lead, with a full 13-inch iPad below; 9:41 and Transcripts/Record/Settings toolbar visible.",
+            "status": "generated",
+            "feedback": ""
+          },
+          {
+            "benefit_order": 2,
+            "headline": "TURN RECORDINGS INTO ACTION",
+            "benefit_dir": "screenshots/ipad-13/02-turn-recordings-into-action",
+            "chosen_version": "v1",
+            "final_path": "screenshots/ipad-13/final/02-turn-recordings-into-action.jpg",
+            "source_screenshot": "/Users/kirlosyousef/Downloads/Revera - AppStore screenshots/Revera - AppStore screenshots-2.png",
+            "breakout_notes": "Summary, keywords, and action items lead; Identify Speakers is a distinct supporting callout, not a fabricated feature screenshot. Full tablet, 9:41, matching three-tab toolbar.",
+            "status": "generated",
+            "feedback": ""
+          },
+          {
+            "benefit_order": 3,
+            "headline": "ASK YOUR TRANSCRIPT ANYTHING",
+            "benefit_dir": "screenshots/ipad-13/03-ask-transcript-anything",
+            "chosen_version": "v3",
+            "final_path": "screenshots/ipad-13/final/03-ask-transcript-anything.jpg",
+            "source_screenshot": "/Users/kirlosyousef/Developer/Whisper/screenshots/00-sources/03-ask-ai-time-9-41.png",
+            "breakout_notes": "Question-bubble and current suggestion cards carry the story; preserve the Ask AI/Done sheet header, 9:41, and a full iPad device.",
+            "status": "generated",
+            "feedback": ""
+          },
+          {
+            "benefit_order": 4,
+            "headline": "FIND ANY MOMENT FAST",
+            "benefit_dir": "screenshots/ipad-13/04-find-any-moment-fast",
+            "chosen_version": "v3",
+            "final_path": "screenshots/ipad-13/final/04-find-any-moment-fast.jpg",
+            "source_screenshot": "/Users/kirlosyousef/Downloads/Revera - AppStore screenshots/Revera - AppStore screenshots-4.png",
+            "breakout_notes": "Search field and multilingual transcript rows are enlarged; full tablet, 9:41, and matching Transcripts/Record/Settings toolbar.",
+            "status": "generated",
+            "feedback": ""
+          },
+          {
+            "benefit_order": 5,
+            "headline": "TRANSLATE AS YOU LISTEN",
+            "benefit_dir": "screenshots/ipad-13/05-translate-as-you-listen",
+            "chosen_version": "v2",
+            "final_path": "screenshots/ipad-13/final/05-translate-as-you-listen.jpg",
+            "source_screenshot": "/Users/kirlosyousef/Downloads/Revera - AppStore screenshots/Revera - AppStore screenshots.png",
+            "breakout_notes": "Language selector and source-to-English transcript cards lead; full tablet, 9:41, and matching three-tab toolbar.",
+            "status": "generated",
+            "feedback": ""
+          }
+        ],
+        "showcase_path": ""
+      }
+    }
+  },
+  "updated_at": "2026-09-21T15:44:40+03:00"
+}

@@ -9,11 +9,20 @@ import Foundation
 import SwiftData
 import UIKit
 
+struct TranscriptConversationMessage: Sendable {
+    enum Role: String, Sendable {
+        case user
+        case assistant
+    }
+
+    let role: Role
+    let content: String
+}
+
 public class SummaryService {
     // Private singleton instance
     private static let shared = SummaryService()
-    private let apiKey: String
-    private let endpoint = URL(string: "https://api.openai.com/v1/chat/completions")!
+    private let endpoint = OpenAIConfiguration.chatCompletionsURL
     
     public enum ExportFormat {
         case markdown
@@ -26,21 +35,13 @@ public class SummaryService {
     private let model = "gpt-4o-mini"
     
     private init() {
-        // Load API key from Config.plist (same as TranscriptionService)
-        if let path = Bundle.main.path(forResource: "Config", ofType: "plist"),
-           let config = NSDictionary(contentsOfFile: path),
-           let key = config["OpenAIAPIKey"] as? String, !key.isEmpty, key != "YOUR_API_KEY_HERE" {
-            self.apiKey = key
-        } else {
-            self.apiKey = "YOUR_API_KEY_HERE"
-        }
     }
     
     // MARK: - Translation
     public static func translate(text: String, to targetCode: String) async -> String {
         guard !text.isEmpty else { return "" }
-        // If no API key or auto/no-op, return original text
-        guard shared.apiKey != "YOUR_API_KEY_HERE",
+        // If the Worker is not configured or this is a no-op, return original text.
+        guard OpenAIConfiguration.isConfigured,
               !targetCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               targetCode.lowercased() != "auto" else {
             return text
@@ -49,7 +50,6 @@ public class SummaryService {
         do {
             var request = URLRequest(url: shared.endpoint)
             request.httpMethod = "POST"
-            request.setValue("Bearer \(shared.apiKey)", forHTTPHeaderField: "Authorization")
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.timeoutInterval = 30.0
             
@@ -188,7 +188,7 @@ public class SummaryService {
     
     public static func generateSummary(for transcript: String) async -> (summary: String, todos: [String]) {
         // Use OpenAI API if key is configured
-        if shared.apiKey != "YOUR_API_KEY_HERE" && !transcript.isEmpty {
+        if OpenAIConfiguration.isConfigured && !transcript.isEmpty {
             do {
                 let (summary, todos) = try await shared.summarizeWithOpenAI(transcript: transcript)
                 return (summary, todos)
@@ -204,7 +204,7 @@ public class SummaryService {
     
     public static func generateShortSummary(for transcript: String) async -> (summary: String, todos: [String]) {
         // Use OpenAI API if key is configured
-        if shared.apiKey != "YOUR_API_KEY_HERE" && !transcript.isEmpty {
+        if OpenAIConfiguration.isConfigured && !transcript.isEmpty {
             do {
                 let summary = try await shared.summarizeShortWithOpenAI(transcript: transcript)
                 return (summary, [])
@@ -217,35 +217,43 @@ public class SummaryService {
         return (summary, [])
     }
     
-    // MARK: - Q&A
-    public static func answerQuestion(transcript: String, question: String) async throws -> String {
-        guard !question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return ""
-        }
-        // If no API key, provide a minimal fallback
-        guard shared.apiKey != "YOUR_API_KEY_HERE", !transcript.isEmpty else {
-            return "Unable to answer without AI. Please configure OpenAI API key."
-        }
-        return try await shared.answerQuestionWithOpenAI(transcript: transcript, question: question)
-    }
-    
-    // MARK: - General Command/Action
-    public static func performCommand(transcript: String, command: String) async -> String {
-        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+    static func continueTranscriptConversation(
+        transcript: String,
+        history: [TranscriptConversationMessage],
+        message: String
+    ) async throws -> String {
+        let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "" }
-        guard shared.apiKey != "YOUR_API_KEY_HERE", !transcript.isEmpty else {
-            return "Unable to process without AI. Please configure OpenAI API key."
+        guard OpenAIConfiguration.isConfigured, !transcript.isEmpty else {
+            return "Unable to process without AI. Please configure the Worker URL."
         }
+        return try await shared.continueTranscriptConversationWithOpenAI(
+            transcript: transcript,
+            history: history,
+            message: trimmed
+        )
+    }
+
+    static func suggestedConversationPrompts(
+        transcript: String,
+        history: [TranscriptConversationMessage],
+        limit: Int = 3
+    ) async -> [String] {
+        guard OpenAIConfiguration.isConfigured, !transcript.isEmpty else { return [] }
         do {
-            return try await shared.performCommandWithOpenAI(transcript: transcript, command: trimmed)
+            return try await shared.suggestedConversationPromptsWithOpenAI(
+                transcript: transcript,
+                history: history,
+                limit: limit
+            )
         } catch {
-            return "Failed to process: \(error.localizedDescription)"
+            return []
         }
     }
     
     // MARK: - Keywords
     public static func extractKeywords(for transcript: String, maxKeywords: Int = 8) async -> [String] {
-        guard shared.apiKey != "YOUR_API_KEY_HERE", !transcript.isEmpty else {
+        guard OpenAIConfiguration.isConfigured, !transcript.isEmpty else {
             return []
         }
         do {
@@ -265,7 +273,6 @@ public class SummaryService {
         
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.timeoutInterval = 30.0 // Add explicit timeout
         
@@ -350,7 +357,6 @@ public class SummaryService {
         
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.timeoutInterval = 30.0 // Add explicit timeout
         
@@ -422,48 +428,126 @@ public class SummaryService {
 
 // MARK: - Private OpenAI helpers
 private extension SummaryService {
-    func performCommandWithOpenAI(transcript: String, command: String) async throws -> String {
+    func continueTranscriptConversationWithOpenAI(
+        transcript: String,
+        history: [TranscriptConversationMessage],
+        message: String
+    ) async throws -> String {
         let maxTranscriptLength = 6000
         let truncatedTranscript = transcript.count > maxTranscriptLength
             ? String(transcript.prefix(maxTranscriptLength)) + "..."
             : transcript
-        
-        var request = URLRequest(url: endpoint)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 30.0
-        
+
         let system = """
-        You operate on a conversation transcript. Perform the requested task (e.g., summarize, extract action items, extract keywords, translate, reformat, or answer questions) using ONLY the transcript. If speaker names or labels are present, use them when attributing statements. Respond concisely in plain text suitable for sharing. Avoid disclaimers.
-        """
-        let user = """
+        You are Revera's transcript assistant. Continue a natural conversation about the transcript below. \
+        Answer questions and perform requested actions such as extracting action items, drafting follow-ups, \
+        translating, summarizing, or reformatting. Use only information from the transcript. If information is \
+        absent, say so clearly. Respect speaker names or labels. Be concise, useful, and conversational.
+
         Transcript:
         \(truncatedTranscript)
-        
-        Instruction:
-        \(command)
         """
-        let body: [String: Any] = [
-            "model": model,
-            "messages": [
-                ["role": "system", "content": system],
-                ["role": "user", "content": user]
+
+        var messages: [[String: String]] = [["role": "system", "content": system]]
+        messages.append(contentsOf: history.suffix(10).map {
+            ["role": $0.role.rawValue, "content": $0.content]
+        })
+        messages.append(["role": "user", "content": message])
+
+        return try await sendChatRequest(
+            messages: messages,
+            temperature: 0.3,
+            maxTokens: 700,
+            errorLabel: "Transcript conversation"
+        )
+    }
+
+    func suggestedConversationPromptsWithOpenAI(
+        transcript: String,
+        history: [TranscriptConversationMessage],
+        limit: Int
+    ) async throws -> [String] {
+        let maxTranscriptLength = 5000
+        let truncatedTranscript = transcript.count > maxTranscriptLength
+            ? String(transcript.prefix(maxTranscriptLength)) + "..."
+            : transcript
+        let historyText = history.suffix(6)
+            .map { "\($0.role.rawValue): \($0.content)" }
+            .joined(separator: "\n")
+        let prompt = """
+        Generate exactly \(limit) short, useful next prompts for this transcript conversation. \
+        Make them specific to the transcript and diverse: include a question, an insight, or a useful action when appropriate. \
+        If conversation history exists, suggest natural follow-ups without repeating previous requests. \
+        Each prompt must be under 60 characters. Return strict JSON: {"suggestions":["..."]}.
+
+        Transcript:
+        \(truncatedTranscript)
+
+        Conversation so far:
+        \(historyText.isEmpty ? "None" : historyText)
+        """
+        let content = try await sendChatRequest(
+            messages: [
+                ["role": "system", "content": "You create concise, transcript-specific conversation starters and return strict JSON."],
+                ["role": "user", "content": prompt]
             ],
-            "temperature": 0.3,
-            "max_tokens": 600
+            temperature: 0.45,
+            maxTokens: 180,
+            responseFormatJSON: true,
+            errorLabel: "Prompt suggestions"
+        )
+
+        struct SuggestionResponse: Decodable { let suggestions: [String] }
+        let cleaned = content
+            .replacingOccurrences(of: "```json", with: "")
+            .replacingOccurrences(of: "```", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let data = cleaned.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(SuggestionResponse.self, from: data) else {
+            return []
+        }
+        return Array(decoded.suggestions
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .prefix(limit))
+    }
+
+    func sendChatRequest(
+        messages: [[String: String]],
+        temperature: Double,
+        maxTokens: Int,
+        responseFormatJSON: Bool = false,
+        errorLabel: String
+    ) async throws -> String {
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 30.0
+
+        var body: [String: Any] = [
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": maxTokens
         ]
+        if responseFormatJSON {
+            body["response_format"] = ["type": "json_object"]
+        }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
+
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 30.0
         config.timeoutIntervalForResource = 60.0
-        let session = URLSession(configuration: config)
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await URLSession(configuration: config).data(for: request)
         guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
             let responseBody = String(data: data, encoding: .utf8) ?? "Unable to decode response"
-            throw NSError(domain: "SummaryService", code: 4, userInfo: [NSLocalizedDescriptionKey: "Command API error: \(responseBody)"])
+            throw NSError(
+                domain: "SummaryService",
+                code: 4,
+                userInfo: [NSLocalizedDescriptionKey: "\(errorLabel) API error: \(responseBody)"]
+            )
         }
+
         struct OpenAIResponse: Decodable {
             struct Choice: Decodable {
                 struct Message: Decodable { let content: String }
@@ -472,8 +556,8 @@ private extension SummaryService {
             let choices: [Choice]
         }
         let decoded = try JSONDecoder().decode(OpenAIResponse.self, from: data)
-        let content = decoded.choices.first?.message.content.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return content
+        return decoded.choices.first?.message.content
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
     func extractKeywordsWithOpenAI(transcript: String, maxKeywords: Int) async throws -> [String] {
         let maxTranscriptLength = 4000
@@ -483,7 +567,6 @@ private extension SummaryService {
         
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.timeoutInterval = 30.0
         
@@ -542,65 +625,4 @@ private extension SummaryService {
             .filter { !$0.isEmpty }
         return Array(candidates.prefix(maxKeywords))
     }
-    func answerQuestionWithOpenAI(transcript: String, question: String) async throws -> String {
-        // Limit transcript length to keep payload small
-        let maxTranscriptLength = 6000
-        let truncatedTranscript = transcript.count > maxTranscriptLength
-            ? String(transcript.prefix(maxTranscriptLength)) + "..."
-            : transcript
-        
-        var request = URLRequest(url: endpoint)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 30.0
-        
-        let system = """
-        You answer questions strictly using the provided transcript. \
-        If speaker names or labels are present, you may refer to them. \
-        If the answer is not clearly present, reply with: \"Not found in transcript.\" \
-        Be concise (<= 2 sentences).
-        """
-        let user = """
-        Transcript:
-        \(truncatedTranscript)
-        
-        Question: \(question)
-        """
-        let body: [String: Any] = [
-            "model": model,
-            "messages": [
-                ["role": "system", "content": system],
-                ["role": "user", "content": user]
-            ],
-            "temperature": 0.2,
-            "max_tokens": 200
-        ]
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
-        let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 30.0
-        config.timeoutIntervalForResource = 60.0
-        let session = URLSession(configuration: config)
-        let (data, response) = try await session.data(for: request)
-        
-        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-            let responseBody = String(data: data, encoding: .utf8) ?? "Unable to decode response"
-            throw NSError(domain: "SummaryService", code: 2, userInfo: [NSLocalizedDescriptionKey: "Q&A API error: \(responseBody)"])
-        }
-        
-        struct OpenAIResponse: Decodable {
-            struct Choice: Decodable {
-                struct Message: Decodable {
-                    let content: String
-                }
-                let message: Message
-            }
-            let choices: [Choice]
-        }
-        let decoded = try JSONDecoder().decode(OpenAIResponse.self, from: data)
-        let content = decoded.choices.first?.message.content.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return content
-    }
 }
-

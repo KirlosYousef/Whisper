@@ -20,7 +20,6 @@ final class RealtimeTranscriptionService {
         static let vadSilenceDurationMs = 720
     }
 
-    private let apiKey: String
     private var webSocket: URLSessionWebSocketTask?
     private var isSocketOpen = false
     private var isSessionReady = false
@@ -45,17 +44,13 @@ final class RealtimeTranscriptionService {
     private let maxReconnectAttempts = 5
     var onEvent: ((RealtimeTranscriptionEvent) -> Void)?
 
-    init(apiKey: String = OpenAIConfiguration.apiKey) {
-        self.apiKey = apiKey
-    }
-
     var isConfigured: Bool {
-        apiKey != OpenAIConfiguration.placeholderAPIKey && !apiKey.isEmpty
+        OpenAIConfiguration.isConfigured
     }
 
     func connect(languages: [String] = []) {
         guard isConfigured else {
-            onEvent?(.failed("OpenAI API key is not configured."))
+            onEvent?(.failed("AI service is not configured. Update the Worker URL."))
             return
         }
 
@@ -98,7 +93,7 @@ final class RealtimeTranscriptionService {
     }
 
     private func openConnection() {
-        guard let url = URL(string: "wss://api.openai.com/v1/realtime?intent=transcription") else {
+        guard let url = OpenAIConfiguration.realtimeURL else {
             onEvent?(.failed("Realtime URL is invalid."))
             return
         }
@@ -110,7 +105,6 @@ final class RealtimeTranscriptionService {
         handleErrorCount = 0
 
         var request = URLRequest(url: url)
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
 
         let task = URLSession.shared.webSocketTask(with: request)
         webSocket = task
@@ -417,21 +411,32 @@ final class RealtimeTranscriptionService {
 }
 
 enum OpenAIConfiguration {
-    static let placeholderAPIKey = "YOUR_API_KEY_HERE"
+    // Replace this with the deployed Worker URL. The OpenAI key never belongs in the iOS app.
+    static let workerBaseURL = "https://whisper-openai-proxy.kirlos-yousef.workers.dev"
+    static let workerURLPlaceholder = "https://whisper-openai-proxy.YOUR_ACCOUNT.workers.dev"
     static let realtimeTranscriptionModel = "gpt-live-transcribe"
     static let fileTranscriptionModel = "gpt-transcribe"
     static let fileTranscriptionFallbackModel = "gpt-4o-transcribe"
     static let diarizationModel = "gpt-4o-transcribe-diarize"
     static let transcriptionPrompt = "Voice note. Transcribe in the speaker's original language. Do not translate or switch languages."
 
-    static var apiKey: String {
-        guard let path = Bundle.main.path(forResource: "Config", ofType: "plist"),
-              let config = NSDictionary(contentsOfFile: path),
-              let key = config["OpenAIAPIKey"] as? String,
-              !key.isEmpty else {
-            return placeholderAPIKey
-        }
+    static var isConfigured: Bool {
+        workerBaseURL != workerURLPlaceholder && workerBaseURL.hasPrefix("https://")
+    }
 
-        return key
+    static var audioTranscriptionsURL: URL {
+        URL(string: "\(workerBaseURL)/v1/audio/transcriptions")!
+    }
+
+    static var chatCompletionsURL: URL {
+        URL(string: "\(workerBaseURL)/v1/chat/completions")!
+    }
+
+    static var realtimeURL: URL? {
+        guard var components = URLComponents(string: workerBaseURL) else { return nil }
+        components.scheme = components.scheme == "https" ? "wss" : "ws"
+        components.path = "/v1/realtime"
+        components.query = "intent=transcription"
+        return components.url
     }
 }

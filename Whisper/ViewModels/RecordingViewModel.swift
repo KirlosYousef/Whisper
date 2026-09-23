@@ -38,6 +38,8 @@ class NetworkMonitor {
 class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     @Published var isRecording = false
     @Published var isStartingRecording = false
+    @Published var isPreparingRealtime = false
+    @Published var isFinishingRealtime = false
     @Published var isPaused = false
     @Published var recordings: [Recording] = []
     @Published var permissionDenied = false
@@ -76,7 +78,9 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     private var realtimeDisconnectWorkItem: DispatchWorkItem?
     private var realtimeFlushTimeoutWorkItem: DispatchWorkItem?
     private var realtimeFlushDebounceWorkItem: DispatchWorkItem?
+    private var realtimePrepareTimeoutWorkItem: DispatchWorkItem?
     private var isWaitingForRealtimeFlush = false
+    private var isWaitingToStartAfterRealtime = false
     private var inFlightSegmentTranscriptions: Set<UUID> = []
     private var inFlightSpeakerIdentification: Set<UUID> = []
     @Published private(set) var identifyingSpeakerRecordingIds: Set<UUID> = []
@@ -172,11 +176,15 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     private func handleRealtimeEvent(_ event: RealtimeTranscriptionEvent) {
         switch event {
         case .connected:
+            guard isWaitingToStartAfterRealtime || isRecording else { return }
             isRealtimeConnected = true
             isRealtimeFallbackActive = false
-            realtimeStatusText = "Realtime transcription is live"
+            realtimeStatusText = isWaitingToStartAfterRealtime ? nil : "Realtime transcription is live"
             clearErrorMessage()
             AnalyticsService.shared.trackEvent("Realtime Transcription Connected", properties: nil)
+            if isWaitingToStartAfterRealtime {
+                finishRealtimePrepareAndStartCapture()
+            }
         case .reconnecting(let attempt):
             isRealtimeConnected = false
             realtimeStatusText = "Reconnecting live captions…"
@@ -194,6 +202,14 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
             isRealtimeConnected = false
             isRealtimeFallbackActive = true
             hidesSegmentRowsDuringRealtime = false
+            if isWaitingToStartAfterRealtime {
+                fallbackToSegmentRecordingAfterPrepareFailure()
+                AnalyticsService.shared.trackEvent("Realtime Transcription Failed", properties: [
+                    "error": message,
+                    "during_prepare": true
+                ])
+                return
+            }
             realtimeStatusText = isRecording ? "Live captions paused. Audio is still being saved." : nil
             if isRecording {
                 setErrorMessage("Live captions paused. Your recording is still being saved.")
@@ -357,7 +373,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     }
     
     func startRecording() {
-        guard !isStartingRecording else { return }
+        guard !isStartingRecording, !isRecording, !isFinishingRealtime else { return }
         isStartingRecording = true
         realtimeDisconnectWorkItem?.cancel()
         realtimeDisconnectWorkItem = nil
@@ -365,7 +381,10 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         realtimeFlushTimeoutWorkItem = nil
         realtimeFlushDebounceWorkItem?.cancel()
         realtimeFlushDebounceWorkItem = nil
+        realtimePrepareTimeoutWorkItem?.cancel()
+        realtimePrepareTimeoutWorkItem = nil
         isWaitingForRealtimeFlush = false
+        isFinishingRealtime = false
         inFlightSegmentTranscriptions.removeAll()
 
         let requestedMode = preRecordingTranscriptionMode
@@ -383,15 +402,25 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
 
         if activeTranscriptionMode == .segments20s {
             transcriptionService.requestSpeechRecognitionPermission()
-        } else {
-            hidesSegmentRowsDuringRealtime = true
-            realtimeStatusText = "Preparing realtime..."
+            beginAudioCapture()
+            return
         }
-        
+
+        hidesSegmentRowsDuringRealtime = true
+        isPreparingRealtime = true
+        isWaitingToStartAfterRealtime = true
+        realtimeStatusText = nil
+        realtimeTranscriptionService.connect(languages: transcriptionLanguageHints())
+        scheduleRealtimePrepareTimeout()
+    }
+
+    private func beginAudioCapture() {
         audioService.startRecording(splitIntoSegments: activeTranscriptionMode == .segments20s) { success, filePath in
             if success {
                 DispatchQueue.main.async {
                     self.isStartingRecording = false
+                    self.isPreparingRealtime = false
+                    self.isWaitingToStartAfterRealtime = false
                     self.isRecording = true
                     self.isPaused = false
                     // Capture the effective target translation language for this session
@@ -408,20 +437,20 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                     self.modelContext.insert(rec)
                     self.activeRecording = rec
                     self.recordings.insert(rec, at: 0)
+
+                    if self.activeTranscriptionMode == .realtimeOpenAI, self.isRealtimeConnected {
+                        HapticsManager.shared.impact(.medium)
+                    }
                     
                     AnalyticsService.shared.trackEvent("Recording Started", properties: [
                         "translation_language": effective,
                         "is_online": self.isOnline,
                         "transcription_mode": self.activeTranscriptionMode.rawValue
                     ])
-
-                    if self.activeTranscriptionMode == .realtimeOpenAI {
-                        self.realtimeStatusText = "Connecting to realtime transcription..."
-                        self.realtimeTranscriptionService.connect(languages: self.transcriptionLanguageHints())
-                    }
                 }
             } else {
                 DispatchQueue.main.async {
+                    self.cancelRealtimePrepare()
                     self.isStartingRecording = false
                     self.hidesSegmentRowsDuringRealtime = false
                     self.realtimeStatusText = nil
@@ -431,6 +460,48 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                 }
                 AnalyticsService.shared.trackEvent("Recording Start Failed", properties: nil)
             }
+        }
+    }
+
+    private func finishRealtimePrepareAndStartCapture() {
+        guard isWaitingToStartAfterRealtime else { return }
+        isWaitingToStartAfterRealtime = false
+        realtimePrepareTimeoutWorkItem?.cancel()
+        realtimePrepareTimeoutWorkItem = nil
+        beginAudioCapture()
+    }
+
+    private func fallbackToSegmentRecordingAfterPrepareFailure() {
+        guard isWaitingToStartAfterRealtime || isPreparingRealtime else { return }
+        realtimePrepareTimeoutWorkItem?.cancel()
+        realtimePrepareTimeoutWorkItem = nil
+        isWaitingToStartAfterRealtime = false
+        realtimeTranscriptionService.disconnect()
+        activeTranscriptionMode = .segments20s
+        hidesSegmentRowsDuringRealtime = false
+        isRealtimeFallbackActive = true
+        realtimeStatusText = "Realtime unavailable. Recording with 20-second segments."
+        setErrorMessage(realtimeStatusText ?? "Realtime unavailable. Recording with 20-second segments.")
+        transcriptionService.requestSpeechRecognitionPermission()
+        beginAudioCapture()
+    }
+
+    private func scheduleRealtimePrepareTimeout() {
+        realtimePrepareTimeoutWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.fallbackToSegmentRecordingAfterPrepareFailure()
+        }
+        realtimePrepareTimeoutWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10.0, execute: work)
+    }
+
+    private func cancelRealtimePrepare() {
+        realtimePrepareTimeoutWorkItem?.cancel()
+        realtimePrepareTimeoutWorkItem = nil
+        isWaitingToStartAfterRealtime = false
+        isPreparingRealtime = false
+        if !isRecording {
+            realtimeTranscriptionService.disconnect()
         }
     }
     
@@ -446,7 +517,17 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     }
     
     func stopRecording() {
+        if isWaitingToStartAfterRealtime || (isStartingRecording && !isRecording) {
+            cancelRealtimePrepare()
+            isStartingRecording = false
+            hidesSegmentRowsDuringRealtime = false
+            realtimeStatusText = nil
+            resetLiveTranscript()
+            return
+        }
+
         isStartingRecording = false
+        isPreparingRealtime = false
         audioService.stopRecording { duration, filePath in
             DispatchQueue.main.async {
                 self.isRecording = false
@@ -483,7 +564,8 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
 
     private func beginRealtimeStopFlush() {
         isWaitingForRealtimeFlush = true
-        realtimeStatusText = "Finishing realtime transcript..."
+        isFinishingRealtime = true
+        realtimeStatusText = nil
         realtimeTranscriptionService.finish()
         scheduleRealtimeFlushTimeout()
         scheduleRealtimeFlushDebounce()
@@ -510,6 +592,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     private func completeRealtimeStopFlush() {
         guard isWaitingForRealtimeFlush else { return }
         isWaitingForRealtimeFlush = false
+        isFinishingRealtime = false
         realtimeFlushTimeoutWorkItem?.cancel()
         realtimeFlushDebounceWorkItem?.cancel()
         realtimeFlushTimeoutWorkItem = nil
@@ -934,40 +1017,6 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         Task { @MainActor in
             await self.generateFullSummary(for: recording)
         }
-    }
-    
-    // MARK: - Q&A
-    @MainActor
-    func answerQuestion(for recording: Recording, question: String) async -> String {
-        let transcript = recording.fullTranscript
-        do {
-            let answer = try await SummaryService.answerQuestion(transcript: transcript, question: question)
-            return answer
-        } catch {
-            return "Failed to answer: \(error.localizedDescription)"
-        }
-    }
-    
-    // MARK: - Generic Ask/Act Command
-    @MainActor
-    func performCommand(for recording: Recording, prompt: String) async -> String {
-        let transcript = recording.fullTranscript
-        AnalyticsService.shared.trackEvent("Ask/Act Command Executed", properties: [
-            "prompt_length": prompt.count,
-            "transcript_length": transcript.count,
-            "recording_duration": recording.duration
-        ])
-        
-        let result = await SummaryService.performCommand(transcript: transcript, command: prompt)
-        
-        AnalyticsService.shared.trackEvent("Ask/Act Command Completed", properties: [
-            "result_length": result.count,
-            "has_result": !result.isEmpty
-        ])
-        if !result.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            LovePromptManager.shared.noteAskAct()
-        }
-        return result
     }
     
     var filteredRecordings: [Recording] {
@@ -1433,6 +1482,11 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         }
     }
 }
+
+
+
+
+
 
 
 

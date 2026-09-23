@@ -65,7 +65,7 @@ struct TranscriptDetailView: View {
                         } label: { Label("Share", systemImage: "square.and.arrow.up") }
                         
                         Button {
-                            qaRecording = recording
+                            openAskAI(source: "recording_menu")
                         } label: { Label("Ask or Act", systemImage: "questionmark.bubble") }
                         
                         Menu("Export") {
@@ -119,11 +119,7 @@ struct TranscriptDetailView: View {
                 }
                 
                 Button {
-                    qaRecording = recording
-                    AnalyticsService.shared.trackEvent("Ask/Act Opened", properties: [
-                        "recording_duration": recording.duration,
-                        "source": "transcript_detail"
-                    ])
+                    openAskAI(source: "transcript_detail")
                 } label: {
                     HStack(spacing: 12) {
                         Image(systemName: "questionmark.bubble")
@@ -313,15 +309,12 @@ struct TranscriptDetailView: View {
             Button("OK", role: .cancel) {}
         }
         .sheet(item: $qaRecording) { rec in
-            AskActionSheet(
-                recording: rec,
-                run: { recording, prompt in
-                    await viewModel.performCommand(for: recording, prompt: prompt)
-                },
-                onDismiss: {
-                    qaRecording = nil
-                }
+            AskAIConversationView(
+                transcript: rec.fullTranscript,
+                context: .recording(duration: rec.duration)
             )
+            .presentationDetents([.large])
+            .presentationDragIndicator(.visible)
         }
         .onAppear {
             viewModel.resumeInterruptedSpeakerIdentification(for: recording)
@@ -331,6 +324,14 @@ struct TranscriptDetailView: View {
     
     private var titleText: String {
         recording.title?.isEmpty == false ? recording.title! : "Recording"
+    }
+
+    private func openAskAI(source: String) {
+        AnalyticsService.shared.trackEvent("Ask/Act Opened", properties: [
+            "recording_duration": recording.duration,
+            "source": source
+        ])
+        qaRecording = recording
     }
 
     private var shouldShowSpeakerTurns: Bool {
@@ -551,5 +552,3 @@ struct TranscriptDetailView: View {
         }
     }
 }
-
-

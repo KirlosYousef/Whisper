@@ -39,8 +39,6 @@ final class OnboardingDemoViewModel: NSObject, ObservableObject {
     @Published private(set) var summary = ""
     @Published private(set) var summaryTodos: [String] = []
     @Published private(set) var isGeneratingSummary = false
-    @Published private(set) var askAIAnswer = ""
-    @Published private(set) var isAskingAI = false
 
     let maximumDuration: TimeInterval = 15
     let minimumManualStopDuration: TimeInterval = 2
@@ -61,12 +59,15 @@ final class OnboardingDemoViewModel: NSObject, ObservableObject {
     private var timer: Timer?
     private var finishTimeout: DispatchWorkItem?
     private var finishDebounce: DispatchWorkItem?
+    private var connectTimeout: DispatchWorkItem?
     private var finalizationTask: Task<Void, Never>?
     private var temporaryURLs: Set<URL> = []
     private var didTrackFirstTranscript = false
     private var didTrackRealtimeConnected = false
     private var didTrackFailure = false
     private var didFinishAttempt = false
+    private var didBeginAudio = false
+    private var startTrigger = "mic_tap"
     private var attempt = 0
 
     init(
@@ -109,6 +110,10 @@ final class OnboardingDemoViewModel: NSObject, ObservableObject {
         phase == .recording && elapsed >= minimumManualStopDuration
     }
 
+    var transcript: String {
+        realtimeTranscriptAccumulator.transcript
+    }
+
     func tryDemo() {
         guard phase == .ready || phase == .failure else { return }
         track("Onboarding Demo Try Tapped")
@@ -145,8 +150,20 @@ final class OnboardingDemoViewModel: NSObject, ObservableObject {
             return
         }
 
-        phase = .connecting
         connectionStartedAt = Date()
+        startTrigger = trigger
+        withAnimation(.spring(response: 0.45, dampingFraction: 0.86)) {
+            phase = .connecting
+        }
+        realtimeService.connect(languages: Languages.transcriptionHints(from: languageCode))
+        scheduleConnectTimeout()
+    }
+
+    private func beginAudioRecording() {
+        guard phase == .connecting, !didBeginAudio else { return }
+        didBeginAudio = true
+        connectTimeout?.cancel()
+        connectTimeout = nil
 
         audioService.startRecording(splitIntoSegments: false, storagePolicy: .ephemeral) { [weak self] success, path in
             Task { @MainActor in
@@ -160,15 +177,32 @@ final class OnboardingDemoViewModel: NSObject, ObservableObject {
                 }
 
                 self.recordingStartedAt = Date()
-                self.phase = .recording
+                withAnimation(.spring(response: 0.45, dampingFraction: 0.86)) {
+                    self.phase = .recording
+                }
+                HapticsManager.shared.impact(.medium)
                 self.track("Onboarding Demo Recording Started", properties: [
                     "attempt": self.attempt,
-                    "start_trigger": trigger
+                    "start_trigger": self.startTrigger
                 ])
                 self.startProgressTimer()
-                self.realtimeService.connect(languages: Languages.transcriptionHints(from: self.languageCode))
             }
         }
+    }
+
+    private func scheduleConnectTimeout() {
+        connectTimeout?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            Task { @MainActor in
+                guard let self, self.phase == .connecting else { return }
+                self.fail(
+                    category: "connect_timeout",
+                    message: "Live transcription took too long to start. Please try again."
+                )
+            }
+        }
+        connectTimeout = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10, execute: work)
     }
 
     func stopManually() {
@@ -221,40 +255,6 @@ final class OnboardingDemoViewModel: NSObject, ObservableObject {
             track("Onboarding Demo Summary Completed", properties: [
                 "summary_length": result.summary.count,
                 "todo_count": result.todos.count
-            ])
-        }
-    }
-
-    func askAI(question: String, source: String = "composer") {
-        let trimmed = question.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard phase == .success, !trimmed.isEmpty, !isAskingAI else { return }
-        let transcript = words.joined(separator: " ")
-        guard !transcript.isEmpty else { return }
-
-        isAskingAI = true
-        askAIAnswer = ""
-        track("Onboarding Demo Ask AI Requested", properties: [
-            "question_length": trimmed.count,
-            "word_count": words.count,
-            "input_source": source
-        ])
-        Task {
-            let answer: String
-            do {
-                answer = try await SummaryService.answerQuestion(transcript: transcript, question: trimmed)
-            } catch {
-                answer = "I couldn’t answer that right now. Please try another question."
-            }
-            guard phase == .success else { return }
-            askAIAnswer = answer
-            isAskingAI = false
-            if !answer.isEmpty {
-                HapticsManager.shared.selection()
-            }
-            track("Onboarding Demo Ask AI Completed", properties: [
-                "answer_length": answer.count,
-                "has_answer": !answer.isEmpty,
-                "input_source": source
             ])
         }
     }
@@ -354,6 +354,9 @@ final class OnboardingDemoViewModel: NSObject, ObservableObject {
                     "attempt": attempt
                 ])
             }
+            if phase == .connecting {
+                beginAudioRecording()
+            }
         case .reconnecting:
             isRealtimeConnected = false
         case .delta(let itemID, let text):
@@ -367,7 +370,11 @@ final class OnboardingDemoViewModel: NSObject, ObservableObject {
             }
         case .failed(let message):
             isRealtimeConnected = false
-            if phase == .recording || phase == .connecting {
+            if phase == .connecting {
+                fail(category: "realtime_failed", message: "Live transcription didn’t start. Please try again or continue.")
+                return
+            }
+            if phase == .recording {
                 stopRecording(reason: .interrupted)
                 failureMessage = "Live transcription paused. Please try again or continue."
                 trackFailure(category: "realtime_failed", extra: ["error": message])
@@ -454,7 +461,9 @@ final class OnboardingDemoViewModel: NSObject, ObservableObject {
     private func fail(category: String, message: String) {
         failureMessage = message
         failureOutcome = .failed
-        phase = .failure
+        withAnimation(.spring(response: 0.45, dampingFraction: 0.86)) {
+            phase = .failure
+        }
         trackFailure(category: category)
         cleanupAttempt()
     }
@@ -488,6 +497,8 @@ final class OnboardingDemoViewModel: NSObject, ObservableObject {
         didTrackRealtimeConnected = false
         didTrackFailure = false
         didFinishAttempt = false
+        didBeginAudio = false
+        startTrigger = "mic_tap"
         failureOutcome = .failed
     }
 
@@ -498,6 +509,8 @@ final class OnboardingDemoViewModel: NSObject, ObservableObject {
         finishTimeout = nil
         finishDebounce?.cancel()
         finishDebounce = nil
+        connectTimeout?.cancel()
+        connectTimeout = nil
         finalizationTask?.cancel()
         finalizationTask = nil
         realtimeService.disconnect()

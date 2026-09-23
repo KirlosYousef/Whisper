@@ -59,7 +59,7 @@ struct SpeakerIdentificationProgressView: View {
             }
             .padding(.horizontal, 12)
 
-            AnimatedEqualizerBars()
+            AudioActivityBars()
         }
         .padding(.vertical, 28)
         .padding(.horizontal, 16)
@@ -84,23 +84,5 @@ struct SpeakerIdentificationProgressView: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Building the full transcript and identifying everyone who spoke")
-    }
-}
-
-private struct AnimatedEqualizerBars: View {
-    var body: some View {
-        TimelineView(.animation(minimumInterval: 0.08, paused: false)) { timeline in
-            let t = timeline.date.timeIntervalSinceReferenceDate
-            HStack(alignment: .center, spacing: 5) {
-                ForEach(0..<7, id: \.self) { index in
-                    let height = 8 + abs(sin(t * 2.6 + Double(index) * 0.55)) * 22
-                    Capsule()
-                        .fill(Color.primary.opacity(0.55))
-                        .frame(width: 4, height: height)
-                }
-            }
-            .frame(height: 32)
-        }
-        .accessibilityHidden(true)
     }
 }

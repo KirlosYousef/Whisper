@@ -37,7 +37,7 @@ A production-quality iOS application for recording, transcribing, and managing a
 - iOS 17.0+
 - Xcode 15.0+
 - Swift 5.9+
-- OpenAI API Key (for transcription service)
+- Cloudflare Worker deployment (for hosted AI features)
 
 ## Installation
 
@@ -52,11 +52,11 @@ A production-quality iOS application for recording, transcribing, and managing a
    open Whisper.xcodeproj
    ```
 
-3. **Configure API Key**
+3. **Configure the AI Worker**
    - See `API_SETUP.md` for detailed instructions
-   - Open `Whisper/Config.plist`
-   - Replace `YOUR_API_KEY_HERE` with your OpenAI API key
-   - The API key is now stored securely and won't be committed to version control
+   - Deploy the Worker in `worker/`
+   - Store the OpenAI key with `npx wrangler secret put OPENAI_API_KEY`
+   - Put the deployed Worker URL in `OpenAIConfiguration.workerBaseURL`
 
 4. **Build and Run**
    - Select your target device or simulator
