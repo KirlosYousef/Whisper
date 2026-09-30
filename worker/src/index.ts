@@ -1,5 +1,10 @@
+import { handleRevenueCatWebhook } from "./revenuecat-webhook";
+
 export interface Env {
   OPENAI_API_KEY: string;
+  REVENUECAT_WEBHOOK_AUTH_TOKEN?: string;
+  REVENUECAT_APP_ID?: string;
+  MIXPANEL_PROJECT_TOKEN?: string;
 }
 
 const OPENAI_API = "https://api.openai.com";
@@ -65,13 +70,17 @@ async function proxyRealtime(request: Request, env: Env): Promise<Response> {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    if (!env.OPENAI_API_KEY) return jsonError("Worker is not configured.", 500);
     if (request.method === "OPTIONS") return new Response(null, { headers: corsHeaders() });
 
     const url = new URL(request.url);
+    if (url.pathname === "/revenuecat/webhook") {
+      return handleRevenueCatWebhook(request, env);
+    }
+
     const isWebSocket = request.headers.get("Upgrade")?.toLowerCase() === "websocket";
 
     if (isWebSocket && url.pathname === "/v1/realtime") {
+      if (!env.OPENAI_API_KEY) return jsonError("Worker is not configured.", 500);
       return proxyRealtime(request, env);
     }
 
@@ -79,6 +88,7 @@ export default {
     if (request.method !== "POST" || !upstreamPath) {
       return jsonError("Route not found.", 404);
     }
+    if (!env.OPENAI_API_KEY) return jsonError("Worker is not configured.", 500);
 
     return proxyHTTP(request, env, upstreamPath);
   },

@@ -88,6 +88,12 @@ final class AnalyticsService {
         identifyCurrentUser(displayName: userId)
     }
 
+    /// Stable pseudonymous Mixpanel identifier used to join server-side subscription events
+    /// to this device's existing analytics history. Never use a display name or email here.
+    func attributionDistinctID() -> String {
+        analyticsUserId()
+    }
+
     func reset() {
         Mixpanel.mainInstance().reset()
         UserDefaults.standard.removeObject(forKey: Self.analyticsUserIdKey)

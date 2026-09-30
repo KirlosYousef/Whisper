@@ -77,7 +77,8 @@ class PaywallManager: NSObject, ObservableObject {
         guard let variant = OnboardingExperimentManager.shared.currentVariant else { return }
         Purchases.shared.attribution.setAttributes([
             "experiment_id": OnboardingExperimentManager.experimentID,
-            "experiment_variant": variant.rawValue
+            "experiment_variant": variant.rawValue,
+            "mixpanel_distinct_id": AnalyticsService.shared.attributionDistinctID()
         ])
     }
 
