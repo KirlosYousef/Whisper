@@ -47,10 +47,15 @@ struct PayWallView: View {
             .onPurchaseCompleted { transaction, customerInfo in
                 var properties = activePackageProperties
                 properties["entitlement_count"] = customerInfo.entitlements.active.count
+                if customerInfo.entitlements.active.count == 1,
+                   let periodType = customerInfo.entitlements.active.values.first?.periodType {
+                    properties["subscription_period_type"] = SubscriptionAttribution.periodTypeName(periodType)
+                }
                 if let transaction {
                     properties["transaction_product_identifier"] = transaction.productIdentifier
                 }
                 track("Paywall Purchase Completed", properties: properties)
+                PaywallManager.shared.recordCompletedPaywallPurchase(customerInfo: customerInfo)
             }
             .onPurchaseCancelled {
                 track("Paywall Purchase Cancelled", properties: activePackageProperties)

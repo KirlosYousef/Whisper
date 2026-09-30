@@ -10,7 +10,8 @@
       "Use GPT Image, not Gemini.",
       "The four original feature references are low-resolution legacy captures (250-264 px wide); the Ask or Act capture is superseded by the newer full-resolution Ask AI reference.",
       "Keep the phone supportive rather than dominant, give feature-led copy and breakouts the hierarchy, use 9:41 in every status bar, and keep a consistent toolbar/chrome treatment.",
-      "Mention speaker identification as a concise feature callout without fabricating a speaker-identification screenshot."
+      "Mention speaker identification as a concise feature callout without fabricating a speaker-identification screenshot.",
+      "User asked to continue with the approved ink-and-white visual direction, use supplied screenshots as feature references, and use realistic randomized demo data where helpful. Capture each device screenshot fresh through RocketSim; keep iPad captures device-specific."
     ]
   },
   "benefits": [
@@ -133,14 +134,28 @@
         "Conversation is at the empty/suggestion state rather than showing a sample answer."
       ],
       "notes": "Use as the screen-3 source and preserve its current Ask AI layout; normalize status time to 9:41 and keep the same toolbar treatment across the campaign."
+    },
+    {
+      "path": "/Users/kirlosyousef/Developer/Whisper/screenshots/00-sources/01-record-screen-live-ready-9-41.png",
+      "screen": "Fresh iPhone 17 Pro RocketSim capture of Revera’s Record tab, idle and ready for real-time transcription, with Realtime selected and a 9:41 status bar.",
+      "rating": "Usable",
+      "strengths": [
+        "Authentic current app UI captured through RocketSim.",
+        "Realtime mode, microphone action, translation control, and all three tabs are visible.",
+        "Clean 9:41 status bar."
+      ],
+      "problems": [
+        "The idle screen has no transcript content, so the campaign artwork must carry the live-transcription story without inventing an in-app transcript."
+      ],
+      "notes": "Used only as the small product screen in the first GPT Image concept; the waveform and headline carry the feature story."
     }
   ],
   "pairings": [
     {
       "benefit_order": 1,
       "headline": "CATCH EVERY THOUGHT LIVE",
-      "screenshot_path": "/Users/kirlosyousef/Downloads/Revera - AppStore screenshots/Revera - AppStore screenshots-1.png",
-      "reasoning": "Realtime Live recording screen; creative transcript/sound-wave breakout will carry the message while the phone remains secondary."
+      "screenshot_path": "/Users/kirlosyousef/Developer/Whisper/screenshots/00-sources/01-record-screen-live-ready-9-41.png",
+      "reasoning": "Fresh 9:41 RocketSim capture of Revera’s Realtime-ready Record screen; the headline and sculpted sound wave carry the live-capture benefit."
     },
     {
       "benefit_order": 2,
@@ -168,35 +183,35 @@
     }
   ],
   "brand_color": {
-    "name": "Electric Indigo",
-    "hex": "#4C3DFF",
-    "reasoning": "High-contrast flat campaign color complements Revera's monochrome interface and icon; use lime #D8FF63 sparingly for feature accents."
+    "name": "Ink Black",
+    "hex": "#0A0A0A",
+    "reasoning": "Matches Revera’s matte-black app surface and black-and-white app icon; reserve a restrained live-green accent for the realtime signal."
   },
   "generation": {
-    "target_display": "iPhone 6.7-inch portrait",
+    "target_display": "iPhone portrait",
     "dimensions": "1284 x 2778",
     "items": [
       {
         "benefit_order": 1,
         "headline": "CATCH EVERY THOUGHT LIVE",
-        "benefit_dir": "screenshots/01-catch-every-thought",
-        "chosen_version": "v4",
-        "final_path": "screenshots/final/01-catch-every-thought.jpg",
-        "source_screenshot": "/Users/kirlosyousef/Downloads/Revera - AppStore screenshots/Revera - AppStore screenshots-1.png",
-        "breakout_notes": "Feature-led live transcript and sound-wave composition; full device, 9:41, and Transcripts/Record/Settings toolbar visible.",
-        "status": "generated",
-        "feedback": ""
+        "benefit_dir": "screenshots/campaign-2026-09-24/iphone/01-catch-every-thought",
+        "chosen_version": "gpt-image-first-concept",
+        "final_path": "screenshots/campaign-2026-09-24/iphone/01-catch-every-thought/01-catch-every-thought-1284x2778.png",
+        "source_screenshot": "/Users/kirlosyousef/Developer/Whisper/screenshots/00-sources/01-record-screen-live-ready-9-41.png",
+        "breakout_notes": "Ink-and-white campaign with a restrained live-green accent; oversized hook and sculpted sound-wave ribbon lead, with the real 9:41 Record screen kept secondary and no fabricated transcript.",
+        "status": "approved",
+        "feedback": "User approved the visual direction by asking to continue and supplied additional feature references."
       },
       {
         "benefit_order": 2,
         "headline": "TURN RECORDINGS INTO ACTION",
-        "benefit_dir": "screenshots/02-turn-recordings-into-action",
-        "chosen_version": "v4",
-        "final_path": "screenshots/final/02-turn-recordings-into-action.jpg",
-        "source_screenshot": "/Users/kirlosyousef/Downloads/Revera - AppStore screenshots/Revera - AppStore screenshots-2.png",
-        "breakout_notes": "Summary and action-item takeaways lead; Identify Speakers is a supporting feature callout only; full device, 9:41, and the matching three-tab toolbar are visible.",
+        "benefit_dir": "screenshots/campaign-2026-09-24/iphone/02-turn-recordings-into-action",
+        "chosen_version": "GPT Image draft",
+        "final_path": "screenshots/campaign-2026-09-24/iphone/02-turn-recordings-into-action/02-turn-recordings-into-action-1284x2778.png",
+        "source_screenshot": "screenshots/00-sources/02-transcript-actions-9-41.png",
+        "breakout_notes": "Large floating next-steps and key-ideas cards lead; fresh RocketSim transcript detail supports the story.",
         "status": "generated",
-        "feedback": ""
+        "feedback": "Awaiting user approval of this screen."
       },
       {
         "benefit_order": 3,
@@ -206,8 +221,8 @@
         "final_path": "screenshots/final/03-ask-transcript-anything.jpg",
         "source_screenshot": "/Users/kirlosyousef/Developer/Whisper/screenshots/00-sources/03-ask-ai-time-9-41.png",
         "breakout_notes": "Current Ask AI suggestion UI from the supplied full-resolution capture; full device and 9:41 visible, preserving the screen-specific Ask AI/Done header.",
-        "status": "generated",
-        "feedback": ""
+        "status": "needs-redo",
+        "feedback": "Superseded by the requested new visual direction; revisit after first-screen style approval."
       },
       {
         "benefit_order": 4,
@@ -217,8 +232,8 @@
         "final_path": "screenshots/final/04-find-any-moment-fast.jpg",
         "source_screenshot": "/Users/kirlosyousef/Downloads/Revera - AppStore screenshots/Revera - AppStore screenshots-4.png",
         "breakout_notes": "Search field and transcript-library snippets carry the feature story; full device, 9:41, and matching three-tab toolbar visible.",
-        "status": "generated",
-        "feedback": ""
+        "status": "needs-redo",
+        "feedback": "Superseded by the requested new visual direction; revisit after first-screen style approval."
       },
       {
         "benefit_order": 5,
@@ -228,8 +243,8 @@
         "final_path": "screenshots/final/05-translate-as-you-listen.jpg",
         "source_screenshot": "/Users/kirlosyousef/Downloads/Revera - AppStore screenshots/Revera - AppStore screenshots.png",
         "breakout_notes": "Large translation-language control and transcript panel lead; full device, 9:41, and matching three-tab toolbar visible.",
-        "status": "generated",
-        "feedback": ""
+        "status": "needs-redo",
+        "feedback": "Superseded by the requested new visual direction; revisit after first-screen style approval."
       }
     ],
     "showcase_path": "",
@@ -237,7 +252,7 @@
       "ipad_13": {
         "target_display": "iPad 13-inch portrait",
         "dimensions": "2064 x 2752",
-        "notes": "Adapt the five existing iPhone campaign designs to a tablet composition; retain Electric Indigo/lime styling, headlines, 9:41, and consistent app navigation where applicable.",
+        "notes": "Create a separate 13-inch iPad campaign only after the first iPhone style is approved; capture every iPad screen fresh in iPadOS and do not reuse iPhone captures.",
         "items": [
           {
             "benefit_order": 1,
@@ -247,8 +262,8 @@
             "final_path": "screenshots/ipad-13/final/01-catch-every-thought.jpg",
             "source_screenshot": "/Users/kirlosyousef/Downloads/Revera - AppStore screenshots/Revera - AppStore screenshots-1.png",
             "breakout_notes": "Live transcript and waveform lead, with a full 13-inch iPad below; 9:41 and Transcripts/Record/Settings toolbar visible.",
-            "status": "generated",
-            "feedback": ""
+            "status": "needs-redo",
+            "feedback": "Older draft is superseded; use a fresh, unique iPadOS RocketSim capture after iPhone style approval."
           },
           {
             "benefit_order": 2,
@@ -258,8 +273,8 @@
             "final_path": "screenshots/ipad-13/final/02-turn-recordings-into-action.jpg",
             "source_screenshot": "/Users/kirlosyousef/Downloads/Revera - AppStore screenshots/Revera - AppStore screenshots-2.png",
             "breakout_notes": "Summary, keywords, and action items lead; Identify Speakers is a distinct supporting callout, not a fabricated feature screenshot. Full tablet, 9:41, matching three-tab toolbar.",
-            "status": "generated",
-            "feedback": ""
+            "status": "needs-redo",
+            "feedback": "Older draft is superseded; use a fresh, unique iPadOS RocketSim capture after iPhone style approval."
           },
           {
             "benefit_order": 3,
@@ -269,8 +284,8 @@
             "final_path": "screenshots/ipad-13/final/03-ask-transcript-anything.jpg",
             "source_screenshot": "/Users/kirlosyousef/Developer/Whisper/screenshots/00-sources/03-ask-ai-time-9-41.png",
             "breakout_notes": "Question-bubble and current suggestion cards carry the story; preserve the Ask AI/Done sheet header, 9:41, and a full iPad device.",
-            "status": "generated",
-            "feedback": ""
+            "status": "needs-redo",
+            "feedback": "Older draft is superseded; use a fresh, unique iPadOS RocketSim capture after iPhone style approval."
           },
           {
             "benefit_order": 4,
@@ -280,8 +295,8 @@
             "final_path": "screenshots/ipad-13/final/04-find-any-moment-fast.jpg",
             "source_screenshot": "/Users/kirlosyousef/Downloads/Revera - AppStore screenshots/Revera - AppStore screenshots-4.png",
             "breakout_notes": "Search field and multilingual transcript rows are enlarged; full tablet, 9:41, and matching Transcripts/Record/Settings toolbar.",
-            "status": "generated",
-            "feedback": ""
+            "status": "needs-redo",
+            "feedback": "Older draft is superseded; use a fresh, unique iPadOS RocketSim capture after iPhone style approval."
           },
           {
             "benefit_order": 5,
@@ -291,13 +306,13 @@
             "final_path": "screenshots/ipad-13/final/05-translate-as-you-listen.jpg",
             "source_screenshot": "/Users/kirlosyousef/Downloads/Revera - AppStore screenshots/Revera - AppStore screenshots.png",
             "breakout_notes": "Language selector and source-to-English transcript cards lead; full tablet, 9:41, and matching three-tab toolbar.",
-            "status": "generated",
-            "feedback": ""
+            "status": "needs-redo",
+            "feedback": "Older draft is superseded; use a fresh, unique iPadOS RocketSim capture after iPhone style approval."
           }
         ],
         "showcase_path": ""
       }
     }
   },
-  "updated_at": "2026-09-21T15:44:40+03:00"
+  "updated_at": "2026-09-24T17:56:18+03:00"
 }

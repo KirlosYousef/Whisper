@@ -8,11 +8,42 @@
 import Foundation
 import RevenueCat
 
+enum ObservedTrialConversionAction: Equatable {
+    case observeTrial
+    case clearObservation
+    case trackConversion
+    case none
+}
+
+enum SubscriptionAttribution {
+    static func periodTypeName(_ periodType: PeriodType) -> String {
+        switch periodType {
+        case .trial: "trial"
+        case .intro: "intro"
+        case .normal: "normal"
+        case .prepaid: "prepaid"
+        }
+    }
+
+    static func observedTrialAction(
+        hasActiveTrial: Bool,
+        hadObservedTrial: Bool,
+        isPremium: Bool,
+        hasNormalActiveEntitlement: Bool
+    ) -> ObservedTrialConversionAction {
+        if hasActiveTrial { return .observeTrial }
+        guard hadObservedTrial else { return .none }
+        guard isPremium else { return .clearObservation }
+        return hasNormalActiveEntitlement ? .trackConversion : .none
+    }
+}
+
 class PaywallManager: NSObject, ObservableObject {
     static var shared = PaywallManager()
 
     private static let cachedPremiumKey = "cachedIsPremium"
     private static let lastTrackedUnsubscribeKey = "lastTrackedUnsubscribeAt"
+    private static let observedTrialKey = "observedRevenueCatTrialForAttribution"
 
     @Published var isPremium: Bool
     @Published var hasResolvedPremiumStatus = false
@@ -33,10 +64,33 @@ class PaywallManager: NSObject, ObservableObject {
         }
         Purchases.configure(withAPIKey: apiKey)
         Purchases.shared.delegate = self
+        syncOnboardingExperimentAttributes()
 
         Task {
             _ = await isPremiumMember()
         }
+    }
+
+    /// Saves only the experiment assignment so RevenueCat exports can be segmented by variant.
+    /// These are custom customer attributes, not reserved install-attribution fields.
+    private func syncOnboardingExperimentAttributes() {
+        guard let variant = OnboardingExperimentManager.shared.currentVariant else { return }
+        Purchases.shared.attribution.setAttributes([
+            "experiment_id": OnboardingExperimentManager.experimentID,
+            "experiment_variant": variant.rawValue
+        ])
+    }
+
+    /// Called from RevenueCat's purchase callback, where CustomerInfo reflects the completed
+    /// transaction. A trial period here is a reliable signal that the purchase started a trial.
+    func recordCompletedPaywallPurchase(customerInfo: CustomerInfo) {
+        let activeEntitlements = customerInfo.entitlements.active.values
+        guard activeEntitlements.contains(where: { $0.periodType == .trial }) else { return }
+
+        UserDefaults.standard.set(true, forKey: Self.observedTrialKey)
+        AnalyticsService.shared.trackEvent("Subscription Trial Started", properties: [
+            "subscription_period_type": "trial"
+        ])
     }
 
     private func loadRevenueCatAPIKey() -> String? {
@@ -83,6 +137,8 @@ class PaywallManager: NSObject, ObservableObject {
         hasResolvedPremiumStatus = true
         UserDefaults.standard.set(isPremiumMember, forKey: Self.cachedPremiumKey)
 
+        trackObservedTrialConversion(from: customerInfo, isPremiumNow: isPremiumMember)
+
         if wasPremium != isPremiumMember {
             AnalyticsService.shared.trackEvent("Premium Status Changed", properties: [
                 "is_premium": isPremiumMember,
@@ -101,6 +157,38 @@ class PaywallManager: NSObject, ObservableObject {
         }
 
         trackCancellationIfNeeded(from: customerInfo, isPremiumNow: isPremiumMember)
+    }
+
+    /// RevenueCat CustomerInfo is refreshed after a renewal and when the app becomes active.
+    /// A transition from a locally observed trial to a normal entitlement is useful evidence of
+    /// trial conversion, but cannot capture conversions while the app remains unopened.
+    private func trackObservedTrialConversion(from customerInfo: CustomerInfo, isPremiumNow: Bool) {
+        let hasActiveTrial = customerInfo.entitlements.active.values.contains { $0.periodType == .trial }
+        let hasNormalActiveEntitlement = customerInfo.entitlements.active.values.contains {
+            $0.periodType == .normal
+        }
+        let action = SubscriptionAttribution.observedTrialAction(
+            hasActiveTrial: hasActiveTrial,
+            hadObservedTrial: UserDefaults.standard.bool(forKey: Self.observedTrialKey),
+            isPremium: isPremiumNow,
+            hasNormalActiveEntitlement: hasNormalActiveEntitlement
+        )
+
+        switch action {
+        case .observeTrial:
+            UserDefaults.standard.set(true, forKey: Self.observedTrialKey)
+        case .clearObservation:
+            // The observed trial ended without an active entitlement; do not carry it into a later purchase.
+            UserDefaults.standard.removeObject(forKey: Self.observedTrialKey)
+        case .trackConversion:
+            UserDefaults.standard.removeObject(forKey: Self.observedTrialKey)
+            AnalyticsService.shared.trackEvent("Subscription Trial Converted (Observed)", properties: [
+                "subscription_period_type": "normal",
+                "attribution_source": "client_observed_customer_info_transition"
+            ])
+        case .none:
+            break
+        }
     }
 
     private func trackCancellationIfNeeded(from customerInfo: CustomerInfo, isPremiumNow: Bool) {
