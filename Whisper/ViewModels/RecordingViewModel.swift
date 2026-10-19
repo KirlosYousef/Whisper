@@ -107,8 +107,10 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         guard let access = usageAccess.snapshot,
               access.state == "paid" || (access.state == "trial" && (access.remainingMs ?? 0) > 0) else {
             let trialExhausted = usageAccess.lastAccessError == .trialExhausted || usageAccess.snapshot?.remainingMs == 0
-            let reason: UsageAccessError = trialExhausted ? .trialExhausted : .noVerifiedSubscription
-            setErrorMessage(reason.localizedDescription)
+            // Without a verified subscription the usage banner offers the trial paywall instead of a raw error.
+            if trialExhausted {
+                setErrorMessage(UsageAccessError.trialExhausted.localizedDescription)
+            }
             return
         }
         isTrialUsageExhausted = false

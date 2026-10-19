@@ -9,6 +9,7 @@ struct RecordScreen: View {
     @ObservedObject private var usageAccess = UsageAccessManager.shared
     @State private var docked = false
     @State private var showUnlimitedPaywall = false
+    @State private var showTrialPaywall = false
     @State private var playingSegmentId: UUID? = nil
     @State private var focusedSpeakerKey: String? = nil
     @State private var followLiveTranscript = true
@@ -139,6 +140,11 @@ struct RecordScreen: View {
 		}) {
 			PayWallView(displayCloseButton: true, source: .trialExhausted, offeringIdentifier: "annualUnlimited")
 		}
+		.sheet(isPresented: $showTrialPaywall, onDismiss: {
+			Task { await usageAccess.refresh(force: true) }
+		}) {
+			PayWallView(displayCloseButton: true, source: .mainApp)
+		}
     }
     
     @ViewBuilder
@@ -171,12 +177,8 @@ struct RecordScreen: View {
                         Task { await viewModel.retryUsageLockedTranscriptionsWhenAccessIsAvailable(refreshFirst: false) }
                     }
                 }
-                if viewModel.hasUsageLockedTranscriptions, usageAccess.snapshot == nil {
-                    Button("Retry subscription verification") {
-                        Task { await viewModel.retryUsageLockedTranscriptionsWhenAccessIsAvailable() }
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.secondary)
+                if usageAccess.snapshot == nil, !viewModel.isTrialUsageExhausted {
+                    capsuleButton("Start free trial") { showTrialPaywall = true }
                 }
                 Button("Manage subscription") {
                     if let url = URL(string: "https://apps.apple.com/account/subscriptions") { openURL(url) }
