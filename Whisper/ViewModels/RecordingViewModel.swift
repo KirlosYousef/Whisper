@@ -462,7 +462,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         isWaitingToStartAfterRealtime = true
         realtimeStatusText = nil
         realtimeTranscriptionService.connect(
-            languages: transcriptionLanguageHints(),
+            languages: Languages.realtimeHints(selected: selectedLanguage, stored: settingsStore.transcriptionLanguage),
             audioSessionID: activeAudioSessionID
         )
         scheduleRealtimePrepareTimeout()
