@@ -529,8 +529,8 @@ export class TrialUsageGateway extends DurableObject<Env> {
     if (!Number.isSafeInteger(offsetMs) || offsetMs < 0) return jsonError("Invalid audio session.", 400);
 
     const snapshot = await this.snapshot();
-    if (!snapshot.active) return jsonError("Subscription has expired.", 403);
-    if (snapshot.remainingMs === 0) return jsonError("trial_exhausted", 402);
+    if (!snapshot.active) return jsonError("Subscription has expired.", 403, "subscription_inactive");
+    if (snapshot.remainingMs === 0) return jsonError("Your trial transcription minutes are used.", 402, "trial_exhausted");
 
     const upstreamURL = new URL(`${openAIBase(this.env)}/v1/realtime`);
     upstreamURL.search = new URL(request.url).search;
@@ -599,6 +599,7 @@ export class TrialUsageGateway extends DurableObject<Env> {
         result = this.consume({ operationID, audioSessionID, startMs: chunkStartMs, durationMs, operationKind: "realtime" });
       } catch (error) {
         if (error instanceof UsageLimitError) closeBoth(4409, "TRIAL_USAGE_EXHAUSTED");
+        else if (error instanceof SubscriptionInactiveError) closeBoth(4403, "SUBSCRIPTION_INACTIVE");
         else closeBoth(1011, "Realtime usage could not be recorded.");
         return;
       }
