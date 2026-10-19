@@ -80,6 +80,16 @@ public enum Languages {
 		return result
 	}
 
+	/// Language hints for the realtime session. An explicit language is sent as one hint.
+	/// In Auto mode nothing is sent, so the model detects each language itself instead of
+	/// choosing between the device languages on short audio chunks.
+	public static func realtimeHints(selected: String, stored: String) -> [String] {
+		let explicit = selected.lowercased() != autoCode ? selected : stored
+		let trimmed = explicit.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+		guard !trimmed.isEmpty, trimmed != autoCode else { return [] }
+		return [trimmed]
+	}
+
 	public static func transcriptionHints(from stored: String) -> [String] {
 		let trimmed = stored.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
 		if trimmed.isEmpty || trimmed == autoCode {

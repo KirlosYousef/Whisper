@@ -7,6 +7,8 @@
 
 import Foundation
 import RevenueCat
+import Security
+import StoreKit
 
 enum ObservedTrialConversionAction: Equatable {
     case observeTrial
@@ -214,5 +216,294 @@ extension PaywallManager: PurchasesDelegate {
         Task { @MainActor in
             apply(customerInfo)
         }
+    }
+}
+
+/// Which paywall the main app shows over itself. `.none` lets the user in.
+enum ForcedPaywallReason: Equatable {
+    case none
+    /// No active subscription or trial: the trial start or subscribe offer.
+    case subscribe
+    /// The 30-minute trial is used up: the Unlimited offer.
+    case trialExhausted
+
+    /// The app is open only while the App Store entitlement (RevenueCat) or the Worker's usage state says the user is active.
+    static func resolve(isPremium: Bool, snapshot: UsageAccessSnapshot?) -> ForcedPaywallReason {
+        if snapshot?.state == "trial", snapshot?.remainingMs == 0 { return .trialExhausted }
+        if isPremium { return .none }
+        if snapshot?.state == "paid" { return .none }
+        if snapshot?.state == "trial", (snapshot?.remainingMs ?? 0) > 0 { return .none }
+        return .subscribe
+    }
+}
+
+enum UsageAccessError: LocalizedError {
+    case noVerifiedSubscription
+    case trialExhausted
+    case updateRequired
+    case verificationPending
+
+    var errorDescription: String? {
+        switch self {
+        case .noVerifiedSubscription: "An active App Store subscription could not be verified. Reopen Revera while online and try again."
+        case .trialExhausted: "You’ve used your 30 trial minutes. Start unlimited transcription now, or keep recording audio."
+        case .updateRequired: "Update Revera to continue cloud transcription. Your saved recordings are still available."
+        case .verificationPending: "Your purchase is still being verified. Keep your recording and try again shortly."
+        }
+    }
+}
+
+struct UsageAccessSnapshot: Decodable {
+    let state: String
+    let active: Bool?
+    let paid: Bool?
+    let demo: Bool?
+    let expiresAt: Double?
+    let allowanceMs: Int?
+    let consumedMs: Int
+    let reservedMs: Int
+    let remainingMs: Int?
+    let paidPeriodStartAt: Double?
+    let paidConsumedMs: Int?
+    let policyVersion: Int
+
+    var remainingMinutes: Int? {
+        guard let remainingMs else { return nil }
+        return Int(ceil(Double(remainingMs) / 60_000))
+    }
+}
+
+@MainActor
+final class UsageAccessManager: ObservableObject {
+    static let shared = UsageAccessManager()
+    static let immediateUnlimitedPurchaseEnabled = true
+    private static let trialProductID = "KirlosYousef.Whisper.AnnualThreeDayTrial"
+    private static let unlimitedProductID = "KirlosYousef.Whisper.AnnualUnlimited"
+    private static let demoKeychainAccount = "onboarding-demo-install-id"
+
+    @Published private(set) var snapshot: UsageAccessSnapshot?
+    @Published private(set) var isResolving = false
+    @Published private(set) var shouldShowFiveMinuteWarning = false
+    @Published private(set) var lastAccessError: UsageAccessError?
+    /// Set while an unlimited plan change is queued to start when the current trial ends.
+    @Published private(set) var scheduledUnlimitedStart: Date?
+
+    private var appToken: String?
+    private var appTokenExpiresAt = Date.distantPast
+    private var demoToken: String?
+    private var demoTokenExpiresAt = Date.distantPast
+    private var sessionTask: Task<SessionResponse, Error>?
+
+    private struct SessionResponse: Decodable {
+        let token: String
+        let usage: UsageAccessSnapshot
+    }
+
+    func authorizationHeader(forOnboardingDemo isDemo: Bool = false) async throws -> String {
+        if isDemo {
+            if let demoToken, demoTokenExpiresAt > Date().addingTimeInterval(30) {
+                return "Bearer \(demoToken)"
+            }
+            let id = try onboardingDemoID()
+            var request = URLRequest(url: URL(string: "\(OpenAIConfiguration.workerBaseURL)/usage/demo-session")!)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONSerialization.data(withJSONObject: ["demoID": id])
+            let response = try await sendSessionRequest(request)
+            demoToken = response.token
+            demoTokenExpiresAt = Date().addingTimeInterval(240)
+            updateSnapshot(response.usage)
+            return "Bearer \(response.token)"
+        }
+
+        if let appToken, appTokenExpiresAt > Date().addingTimeInterval(30) {
+            lastAccessError = nil
+            return "Bearer \(appToken)"
+        }
+        let response: SessionResponse
+        do {
+            response = try await fetchAppSession()
+        } catch let error as UsageAccessError {
+            lastAccessError = error
+            throw error
+        }
+        lastAccessError = nil
+        appToken = response.token
+        appTokenExpiresAt = Date().addingTimeInterval(270)
+        updateSnapshot(response.usage)
+        return "Bearer \(response.token)"
+    }
+
+    /// Concurrent callers (several segments asking for a token at once) share one session request.
+    private func fetchAppSession() async throws -> SessionResponse {
+        if let sessionTask {
+            return try await sessionTask.value
+        }
+        let task = Task { try await self.createAppSession() }
+        sessionTask = task
+        defer { sessionTask = nil }
+        return try await task.value
+    }
+
+    private func createAppSession() async throws -> SessionResponse {
+        do {
+            return try await requestAppSession()
+        } catch UsageAccessError.noVerifiedSubscription {
+            // RevenueCat may not have seen the purchase yet; sync once and retry.
+            _ = try? await Purchases.shared.syncPurchases()
+            return try await requestAppSession()
+        }
+    }
+
+    private func requestAppSession() async throws -> SessionResponse {
+        let signedTransactions = await signedActiveSubscriptionTransactions()
+        guard !signedTransactions.isEmpty else { throw UsageAccessError.noVerifiedSubscription }
+        var request = URLRequest(url: URL(string: "\(OpenAIConfiguration.workerBaseURL)/usage/session")!)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "appUserID": Purchases.shared.appUserID,
+            "signedTransactions": signedTransactions
+        ])
+        return try await sendSessionRequest(request)
+    }
+
+    func refresh(force: Bool = false) async {
+        isResolving = true
+        defer { isResolving = false }
+        if force {
+            appToken = nil
+            appTokenExpiresAt = .distantPast
+        }
+        do {
+            _ = try await authorizationHeader()
+            if snapshot?.state == "trial" {
+                await updateScheduledUnlimitedStart()
+            } else if snapshot?.state == "paid" {
+                scheduledUnlimitedStart = nil
+            }
+        } catch let error as UsageAccessError {
+            // Only a definitive answer clears the snapshot; transient and trial errors keep the last known state.
+            switch error {
+            case .noVerifiedSubscription, .updateRequired:
+                snapshot = nil
+            case .trialExhausted, .verificationPending:
+                break
+            }
+            print("Usage access refresh: \(error.localizedDescription)")
+        } catch {
+            // Network failures keep the last snapshot.
+            print("Usage access refresh: \(error.localizedDescription)")
+        }
+    }
+
+    /// RevenueCat and StoreKit propagate a purchase with a delay, so poll the Worker for a few seconds.
+    /// Returns true once the Worker reports paid usage.
+    func refreshAfterPurchase() async -> Bool {
+        invalidateSession()
+        for delay in [0, 1, 2, 4, 8] {
+            if delay > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(delay) * 1_000_000_000)
+            }
+            await refresh(force: true)
+            if snapshot?.state == "paid" { return true }
+        }
+        await updateScheduledUnlimitedStart()
+        return false
+    }
+
+    /// An unlimited plan purchased during a trial may be scheduled to start when the trial ends.
+    func updateScheduledUnlimitedStart() async {
+        var scheduled: Date?
+        for await result in StoreKit.Transaction.currentEntitlements {
+            guard case .verified(let transaction) = result,
+                  transaction.productID == Self.trialProductID,
+                  let status = await transaction.subscriptionStatus,
+                  case .verified(let renewal) = status.renewalInfo,
+                  renewal.autoRenewPreference == Self.unlimitedProductID else { continue }
+            scheduled = transaction.expirationDate
+        }
+        scheduledUnlimitedStart = scheduled
+    }
+
+    func invalidateSession() {
+        appToken = nil
+        appTokenExpiresAt = .distantPast
+    }
+
+    func refreshUsageSnapshot() async {
+        do {
+            var request = URLRequest(url: URL(string: "\(OpenAIConfiguration.workerBaseURL)/usage/state")!)
+            request.httpMethod = "GET"
+            request.setValue(try await authorizationHeader(), forHTTPHeaderField: "Authorization")
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { return }
+            updateSnapshot(try JSONDecoder().decode(UsageAccessSnapshot.self, from: data))
+        } catch {
+            print("Usage snapshot refresh: \(error.localizedDescription)")
+        }
+    }
+
+    func markFiveMinuteWarningPresented() {
+        UserDefaults.standard.set(true, forKey: "trialFiveMinuteWarningPresented")
+        shouldShowFiveMinuteWarning = false
+    }
+
+    private func signedActiveSubscriptionTransactions() async -> [String] {
+        var transactions: [String] = []
+        for await result in StoreKit.Transaction.currentEntitlements {
+            guard case .verified(let transaction) = result,
+                  transaction.revocationDate == nil,
+                  transaction.expirationDate.map({ $0 > Date() }) == true,
+                  transaction.productID == Self.trialProductID || transaction.productID == Self.unlimitedProductID else { continue }
+            transactions.append(result.jwsRepresentation)
+        }
+        return transactions
+    }
+
+    private func sendSessionRequest(_ request: URLRequest) async throws -> SessionResponse {
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw UsageAccessError.verificationPending }
+        guard (200..<300).contains(http.statusCode) else {
+            if http.statusCode == 402 { throw UsageAccessError.trialExhausted }
+            if http.statusCode == 403 { throw UsageAccessError.noVerifiedSubscription }
+            if http.statusCode == 426 { throw UsageAccessError.updateRequired }
+            throw UsageAccessError.verificationPending
+        }
+        let decoded = try JSONDecoder().decode(SessionResponse.self, from: data)
+        return decoded
+    }
+
+    private func updateSnapshot(_ value: UsageAccessSnapshot) {
+        snapshot = value
+        if value.state == "trial",
+           let remainingMs = value.remainingMs,
+           remainingMs > 0,
+           remainingMs <= 5 * 60_000,
+           !UserDefaults.standard.bool(forKey: "trialFiveMinuteWarningPresented") {
+            shouldShowFiveMinuteWarning = true
+        }
+    }
+
+    private func onboardingDemoID() throws -> String {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Bundle.main.bundleIdentifier ?? "Revera",
+            kSecAttrAccount as String: Self.demoKeychainAccount,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        var result: CFTypeRef?
+        if SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+           let data = result as? Data,
+           let value = String(data: data, encoding: .utf8) { return value }
+        let value = UUID().uuidString.lowercased()
+        var item = query
+        item.removeValue(forKey: kSecReturnData as String)
+        item.removeValue(forKey: kSecMatchLimit as String)
+        item[kSecValueData as String] = Data(value.utf8)
+        item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        guard SecItemAdd(item as CFDictionary, nil) == errSecSuccess else { throw UsageAccessError.verificationPending }
+        return value
     }
 }

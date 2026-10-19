@@ -94,9 +94,9 @@ struct RealtimeTranscriptAccumulator {
 }
 
 enum TranscriptLanguageProcessor {
-    static func translate(_ transcript: String, to targetCode: String?) async -> String {
+    static func translate(_ transcript: String, to targetCode: String?, isOnboardingDemo: Bool = false) async -> String {
         guard let targetCode, !targetCode.isEmpty else { return transcript }
-        let translated = await SummaryService.translate(text: transcript, to: targetCode)
+        let translated = await SummaryService.translate(text: transcript, to: targetCode, isOnboardingDemo: isOnboardingDemo)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return translated.isEmpty ? transcript : translated
     }

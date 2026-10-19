@@ -59,6 +59,15 @@ struct SegmentRow: View {
 					.font(.caption2)
 					.foregroundColor(.primary)
             }
+        } else if segment.status == "locked" {
+            HStack {
+                Image(systemName: "lock.fill")
+                    .foregroundColor(.secondary)
+                    .font(.caption)
+                Text("Saved · upgrade to transcribe")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
         }
     }
     

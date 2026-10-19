@@ -56,6 +56,7 @@ final class OnboardingDemoViewModel: NSObject, ObservableObject {
     private var firstTranscriptAt: Date?
     private var finishStartedAt: Date?
     private var recordedDuration: TimeInterval = 0
+    private var onboardingAudioSessionID = UUID().uuidString
     private var timer: Timer?
     private var finishTimeout: DispatchWorkItem?
     private var finishDebounce: DispatchWorkItem?
@@ -155,7 +156,11 @@ final class OnboardingDemoViewModel: NSObject, ObservableObject {
         withAnimation(.spring(response: 0.45, dampingFraction: 0.86)) {
             phase = .connecting
         }
-        realtimeService.connect(languages: Languages.transcriptionHints(from: languageCode))
+        realtimeService.connect(
+            languages: Languages.transcriptionHints(from: languageCode),
+            audioSessionID: onboardingAudioSessionID,
+            isOnboardingDemo: true
+        )
         scheduleConnectTimeout()
     }
 
@@ -246,7 +251,7 @@ final class OnboardingDemoViewModel: NSObject, ObservableObject {
         isGeneratingSummary = true
         track("Onboarding Demo Summary Requested", properties: ["word_count": words.count])
         Task {
-            let result = await SummaryService.generateSummary(for: transcript)
+                    let result = await SummaryService.generateSummary(for: transcript, isOnboardingDemo: true)
             guard phase == .success else { return }
             summary = result.summary
             summaryTodos = result.todos
@@ -381,6 +386,11 @@ final class OnboardingDemoViewModel: NSObject, ObservableObject {
             }
         case .disconnected:
             isRealtimeConnected = false
+        case .usageExhausted:
+            isRealtimeConnected = false
+            if phase == .recording || phase == .connecting {
+                stopRecording(reason: .automatic)
+            }
         }
     }
 
@@ -411,7 +421,9 @@ final class OnboardingDemoViewModel: NSObject, ObservableObject {
                     let rawResult = try await transcriptionService.transcribe(
                         audioURL: audioURL,
                         segmentStart: 0,
-                        duration: recordedDuration
+                        duration: recordedDuration,
+                        audioSessionID: onboardingAudioSessionID,
+                        isOnboardingDemo: true
                     )
                     try Task.checkCancellation()
                     let result = rawResult.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -429,7 +441,7 @@ final class OnboardingDemoViewModel: NSObject, ObservableObject {
                 }
             }
 
-            let processedTranscript = await TranscriptLanguageProcessor.translate(refinedTranscript, to: target)
+            let processedTranscript = await TranscriptLanguageProcessor.translate(refinedTranscript, to: target, isOnboardingDemo: true)
             guard !Task.isCancelled, phase == .finishing else { return }
 
             realtimeTranscriptAccumulator.replace(with: processedTranscript)
@@ -482,6 +494,7 @@ final class OnboardingDemoViewModel: NSObject, ObservableObject {
 
     private func resetAttempt() {
         cleanupAttempt()
+        onboardingAudioSessionID = UUID().uuidString
         words = []
         realtimeTranscriptAccumulator.reset()
         progress = 0

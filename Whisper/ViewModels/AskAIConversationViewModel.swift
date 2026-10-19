@@ -15,6 +15,11 @@ enum AskAIConversationContext {
             ]
         }
     }
+
+    var isOnboarding: Bool {
+        if case .onboarding = self { return true }
+        return false
+    }
 }
 
 @MainActor
@@ -74,7 +79,8 @@ final class AskAIConversationViewModel: ObservableObject {
                 let answer = try await SummaryService.continueTranscriptConversation(
                     transcript: transcript,
                     history: priorHistory,
-                    message: trimmed
+                    message: trimmed,
+                    isOnboardingDemo: context.isOnboarding
                 )
                 guard !Task.isCancelled else { return }
                 let cleaned = answer.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -112,7 +118,8 @@ final class AskAIConversationViewModel: ObservableObject {
             await SummaryService.suggestedConversationPrompts(
                 transcript: transcript,
                 history: history,
-                limit: 3
+                limit: 3,
+                isOnboardingDemo: context.isOnboarding
             )
         }
         suggestionTask = task
@@ -166,12 +173,5 @@ final class AskAIConversationViewModel: ObservableObject {
         properties["input_source"] = source
         properties["conversation_turn"] = messages.filter { $0.role == .user }.count
         AnalyticsService.shared.trackEvent("Ask AI Conversation Failed", properties: properties)
-    }
-}
-
-private extension AskAIConversationContext {
-    var isOnboarding: Bool {
-        if case .onboarding = self { return true }
-        return false
     }
 }
