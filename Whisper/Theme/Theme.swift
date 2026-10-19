@@ -12,6 +12,8 @@ enum AppTheme {
     static let smallRadius: CGFloat = 10
 	static let cardStroke = Color.gray.opacity(0.12)
 	static let accent = Color.accentColor
+	/// Switch "on" color. The tab bar tints the app `.primary` (white in dark mode), which hides a switch's white knob.
+	static let toggleOn = Color.green
 	
 	// Brand & backgrounds (from UI design)
     static let primary = Color(.label)

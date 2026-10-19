@@ -30,7 +30,7 @@ The Worker intentionally does not provide a general-purpose OpenAI proxy. It str
 
 ## Trial usage enforcement
 
-Cloudflare SQLite Durable Objects keep one usage ledger per verified Apple original transaction ID. The trial allowance is 1,800 seconds total; currently paid subscriptions have no cap. The onboarding preview has a separate 15-second limit. File duration is measured from validated mono PCM WAV data, and live audio is metered as it passes through the Worker.
+Cloudflare SQLite Durable Objects keep one usage ledger per verified Apple original transaction ID. The trial allowance is 1,800 seconds total; currently paid subscriptions have no cap. The onboarding preview has a separate 15-second limit. File duration is measured from validated PCM WAV or AAC/M4A data, and live audio is metered as it passes through the Worker.
 
 Before issuing an access token, the Worker validates the StoreKit transaction JWS with Apple's App Store Server Library and checks the matching active `WhisperNote Pro` entitlement and store transaction through RevenueCat's subscriber API. The RevenueCat app-user ID is only a lookup key; it cannot grant access without the matching signed Apple transaction.
 
@@ -41,7 +41,19 @@ Access enforcement requires two additional Worker secrets:
 
 Set them with `npx wrangler secret put USAGE_SESSION_SECRET` and `npx wrangler secret put REVENUECAT_SECRET_API_KEY`. Never add their values to this repository or paste them into chat. Do not activate this Worker before the updated iOS app is ready; older app versions must update before cloud transcription can continue.
 
-The current iOS build enables the in-app “Start unlimited now” route. Before public release, verify on a physical iPhone in sandbox that billing starts immediately, paid access activates, renewal is correct, and the original trial does not cause an extra charge.
+### Access rules
+
+- **Trial**: `AnnualThreeDayTrial` during its 3-day free introductory offer. 30 transcription minutes in total, counted by the Worker per original transaction ID. The trial's last request may run up to 30 seconds past the allowance; it is charged only what was left, so the trial ends at exactly 0. Live streams forward the last of the allowance and then close with `4409`.
+- **Unlimited**: `AnnualUnlimited`, or `AnnualThreeDayTrial` after Apple renews it into its paid year when the 3 days end. No cap.
+- **No access**: expired, refunded or upgraded-away transactions. An upgraded transaction (`isUpgraded`) can never pull a user back to the trial tier.
+
+The iOS app reads these states from `/usage/session` and `/usage/state`: no subscription shows the hard paywall; used-up trial minutes show the Unlimited offer, which the user can close to read existing transcripts; recording asks for the upgrade before any microphone prompt or connection.
+
+### App Store Connect: make “Upgrade to Unlimited” take effect immediately
+
+Both products must be in the same subscription group, with **`AnnualUnlimited` ranked above `AnnualThreeDayTrial`** (a higher service level). The App Store then treats buying Unlimited during the trial as an upgrade: it starts at once, the trial transaction is marked upgraded, and the Worker moves the same ledger to unlimited on the next session. If Unlimited is ranked below the trial plan, the App Store schedules it for when the trial ends; the app then shows “Unlimited starts <date>” instead of unlocking, which is the behaviour users report as “I upgraded but nothing changed”.
+
+Before public release, verify on a physical iPhone in sandbox that buying Unlimited after the 30 minutes are used unlocks recording within a few seconds, billing starts immediately, renewal is correct, and the original trial does not cause an extra charge.
 
 ## RevenueCat trial attribution setup
 
