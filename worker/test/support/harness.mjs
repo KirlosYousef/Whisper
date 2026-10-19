@@ -60,19 +60,26 @@ export async function startMockOpenAI({ onHTTP, onRealtime } = {}) {
   };
 }
 
+async function freePort() {
+  const server = createServer();
+  const port = await listen(server);
+  await new Promise(resolve => server.close(resolve));
+  return port;
+}
+
 /** Starts the Worker locally with fresh Durable Object storage. */
 export async function startWorker({ openAIBase, vars = {} }) {
   const persistDir = mkdtempSync(join(tmpdir(), "revera-worker-"));
-  const portServer = createServer();
-  const port = await listen(portServer);
-  await new Promise(resolve => portServer.close(resolve));
+  const port = await freePort();
+  const inspectorPort = await freePort();
   const allVars = {
     OPENAI_API_KEY: "test-openai-key",
     USAGE_SESSION_SECRET: `test-secret-${randomUUID()}`,
     OPENAI_API_BASE: openAIBase,
     ...vars,
   };
-  const args = ["dev", "--ip", "127.0.0.1", "--port", String(port), "--persist-to", persistDir,
+  // Test files run in parallel, so give every instance its own inspector port as well.
+  const args = ["dev", "--ip", "127.0.0.1", "--port", String(port), "--inspector-port", String(inspectorPort), "--persist-to", persistDir,
     "--show-interactive-dev-session=false", "--log-level", "warn"];
   for (const [key, value] of Object.entries(allVars)) args.push("--var", `${key}:${value}`);
   const logPath = join(persistDir, "wrangler.log");
