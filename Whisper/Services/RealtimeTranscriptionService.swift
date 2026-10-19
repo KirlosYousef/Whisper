@@ -425,7 +425,7 @@ final class RealtimeTranscriptionService {
 
 enum OpenAIConfiguration {
     // Replace this with the deployed Worker URL. The OpenAI key never belongs in the iOS app.
-    static let workerBaseURL = "https://whisper-openai-proxy.kirlos-yousef.workers.dev"
+    static let workerBaseURL = "https://whisper-trial-test-proxy.kirlos-yousef.workers.dev"
     static let workerURLPlaceholder = "https://whisper-openai-proxy.YOUR_ACCOUNT.workers.dev"
     static let realtimeTranscriptionModel = "gpt-live-transcribe"
     static let fileTranscriptionModel = "gpt-transcribe"
