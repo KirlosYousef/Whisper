@@ -13,6 +13,8 @@ import RevenueCatUI
 struct WhisperApp: App {
     @StateObject private var paywallManager = PaywallManager.shared
     @ObservedObject private var usageAccess = UsageAccessManager.shared
+    @ObservedObject private var paywallCoordinator = PaywallCoordinator.shared
+    @Environment(\.scenePhase) private var scenePhase
     @State private var showPaywallView = false
     @State private var selectedTab: Int = 0
     @StateObject private var viewModel: RecordingViewModel
@@ -34,14 +36,47 @@ struct WhisperApp: App {
         settingsStore.hasCompletedOnboarding
     }
 
-    private var forcedPaywallReason: ForcedPaywallReason {
-        ForcedPaywallReason.resolve(isPremium: paywallManager.isPremium, snapshot: usageAccess.snapshot)
+    private var accessGate: AccessGate {
+        AccessGate.forState(usageAccess.accessState)
     }
 
+    /// Without a trial or subscription the app is hard-gated. Used-up trial minutes get a closable offer instead,
+    /// so existing transcripts stay readable.
     private var shouldShowForcedPaywall: Bool {
         guard !bypassForcedPaywall else { return false }
         guard didFinishLaunch else { return false }
-        return forcedPaywallReason != .none
+        return accessGate == .subscribe
+    }
+
+    private var isRecordingBusy: Bool {
+        viewModel.isRecording || viewModel.isStartingRecording || viewModel.isFinishingRealtime
+    }
+
+    /// Runs on every access change: shows or hides the offers, and resumes saved audio once transcription is allowed.
+    /// On the first call `old == state`.
+    private func handleAccessChange(from old: AccessState, to state: AccessState) {
+        guard shouldShowMainApp, !bypassForcedPaywall else { return }
+        let isFirstCall = old == state
+        switch AccessGate.forState(state) {
+        case .upgrade:
+            // Never cover a recording in progress; the offer appears when it stops.
+            let becameExhausted = isFirstCall || AccessGate.forState(old) != .upgrade
+            if becameExhausted, !isRecordingBusy, paywallCoordinator.sheet == nil {
+                paywallCoordinator.present(.upgrade)
+            }
+        case .subscribe:
+            paywallCoordinator.dismiss()
+        case .open:
+            if paywallCoordinator.sheet != nil, !usageAccess.isConfirmingPurchase {
+                paywallCoordinator.dismiss()
+            }
+        }
+        if state.canTranscribe, isFirstCall || !old.canTranscribe {
+            Task {
+                await viewModel.retryUsageLockedTranscriptionsWhenAccessIsAvailable(refreshFirst: false)
+                viewModel.processPendingSpeakerIdentifications()
+            }
+        }
     }
 
     private var paywallSource: PaywallSource {
@@ -117,20 +152,32 @@ struct WhisperApp: App {
                             HapticsManager.shared.notification(.success)
                         }
                     }
+                    .onChange(of: usageAccess.accessState, initial: true) { old, state in
+                        handleAccessChange(from: old, to: state)
+                    }
+                    .onChange(of: isRecordingBusy) { _, busy in
+                        if !busy, accessGate == .upgrade, paywallCoordinator.sheet == nil {
+                            paywallCoordinator.present(.upgrade)
+                        }
+                    }
+                    .sheet(item: $paywallCoordinator.sheet, onDismiss: {
+                        Task { await usageAccess.refresh() }
+                    }) { sheet in
+                        switch sheet {
+                        case .upgrade:
+                            UpgradePaywallSheet()
+                        }
+                    }
                     
                     if shouldShowForcedPaywall {
-                        if forcedPaywallReason == .trialExhausted {
-                            PayWallView(displayCloseButton: false, source: .trialExhausted, offeringIdentifier: "annualUnlimited")
-                        } else {
-                            PayWallView(
-                                displayCloseButton: false,
-                                source: paywallSource,
-                                demoOutcome: settingsStore.onboardingDemoOutcome,
-                                onImpressionTracked: {
-                                    settingsStore.pendingPaywallSource = ""
-                                }
-                            )
-                        }
+                        PayWallView(
+                            displayCloseButton: false,
+                            source: paywallSource,
+                            demoOutcome: settingsStore.onboardingDemoOutcome,
+                            onImpressionTracked: {
+                                settingsStore.pendingPaywallSource = ""
+                            }
+                        )
                     }
 
                     if lovePromptManager.isPresented
@@ -138,7 +185,8 @@ struct WhisperApp: App {
                         && !viewModel.isStartingRecording
                         && !viewModel.isFinishingRealtime
                         && viewModel.identifyingSpeakerRecordingIds.isEmpty
-                        && !shouldShowForcedPaywall {
+                        && !shouldShowForcedPaywall
+                        && paywallCoordinator.sheet == nil {
                         LovePromptView()
                             .zIndex(20)
                             .transition(.opacity.combined(with: .scale(scale: 0.98)))
@@ -163,6 +211,14 @@ struct WhisperApp: App {
                     "has_completed_onboarding": settingsStore.hasCompletedOnboarding
                 ])
                 didFinishLaunch = true
+            }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            // The trial may have renewed into Unlimited, or a purchase finished, while the app was away.
+            guard phase == .active, didFinishLaunch else { return }
+            Task {
+                _ = await paywallManager.isPremiumMember()
+                await usageAccess.refresh()
             }
         }
         .modelContainer(WhisperApp.sharedModelContainer)

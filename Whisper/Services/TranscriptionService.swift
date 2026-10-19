@@ -6,7 +6,6 @@
 //
 
 import Foundation
-import Speech
 
 class TranscriptionService {
     private let endpoint = OpenAIConfiguration.audioTranscriptionsURL
@@ -16,12 +15,6 @@ class TranscriptionService {
     var preferredLanguages: [String] = []
     
     init() {
-    }
-    
-    func requestSpeechRecognitionPermission() {
-        SFSpeechRecognizer.requestAuthorization { status in
-            print("Speech recognition authorization status: \(status.rawValue)")
-        }
     }
     
     func transcribe(

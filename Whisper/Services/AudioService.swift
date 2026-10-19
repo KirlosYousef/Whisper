@@ -83,6 +83,21 @@ class AudioService: NSObject {
         }
     }
     
+    /// Finds a stored audio file. Paths are saved as absolute paths, and iOS moves the app's data folder on
+    /// reinstall and on some updates, so a file missing at its old path is looked up again under Documents/Segments.
+    static func resolvedAudioURL(forStoredPath path: String) -> URL? {
+        guard !path.isEmpty else { return nil }
+        let fm = FileManager.default
+        if fm.fileExists(atPath: path) {
+            return URL(fileURLWithPath: path)
+        }
+        let name = URL(fileURLWithPath: path).lastPathComponent
+        guard !name.isEmpty,
+              let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first else { return nil }
+        let candidate = docs.appendingPathComponent("Segments", isDirectory: true).appendingPathComponent(name)
+        return fm.fileExists(atPath: candidate.path) ? candidate : nil
+    }
+
     private func segmentsDirectoryURL() -> URL? {
         let fm = FileManager.default
         guard let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first else {
@@ -204,6 +219,14 @@ class AudioService: NSObject {
         }
     }
     
+    func requestPermission() async -> Bool {
+        await withCheckedContinuation { continuation in
+            requestPermission { granted in
+                continuation.resume(returning: granted)
+            }
+        }
+    }
+
     func startRecording(
         splitIntoSegments: Bool = true,
         storagePolicy: AudioStoragePolicy = .persistent,

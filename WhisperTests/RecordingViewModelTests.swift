@@ -65,6 +65,48 @@ final class RecordingViewModelTests: XCTestCase {
         XCTAssertFalse(viewModel.hasUsageLockedTranscriptions)
     }
 
+    /// iOS moves the app's data folder on reinstall, so a saved absolute path can point at the old folder.
+    func testRepairFindsSavedAudioAfterTheAppFolderMoved() throws {
+        let docs = try XCTUnwrap(FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first)
+        let dir = docs.appendingPathComponent("Segments", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let name = "\(UUID().uuidString).wav"
+        let actual = dir.appendingPathComponent(name)
+        try Data(repeating: 0, count: 2048).write(to: actual)
+        defer { try? FileManager.default.removeItem(at: actual) }
+        let stalePath = "/var/mobile/Containers/Data/Application/OLD-CONTAINER/Documents/Segments/\(name)"
+
+        let recording = Recording(createdAt: Date(), duration: 20, filePath: stalePath)
+        let segment = TranscriptionSegment(text: "", status: "locked", timestamp: 0, filePath: stalePath, recording: recording)
+        modelContext.insert(recording)
+        modelContext.insert(segment)
+        try modelContext.save()
+
+        viewModel.repairStoredAudioPaths()
+
+        XCTAssertEqual(segment.filePath, actual.path)
+        XCTAssertEqual(recording.filePath, actual.path)
+        XCTAssertEqual(segment.status, "locked")
+        XCTAssertTrue(viewModel.hasUsageLockedTranscriptions)
+    }
+
+    func testRepairReleasesWaitingSegmentsWhoseAudioIsGone() throws {
+        let missing = "/nowhere/\(UUID().uuidString).wav"
+        let recording = Recording(createdAt: Date(), duration: 40, filePath: missing)
+        let empty = TranscriptionSegment(text: "", status: "locked", timestamp: 0, filePath: missing, recording: recording)
+        let withText = TranscriptionSegment(text: "Kept", status: "locked", timestamp: 20, filePath: "/nowhere/b.wav", recording: recording)
+        modelContext.insert(recording)
+        modelContext.insert(empty)
+        modelContext.insert(withText)
+        try modelContext.save()
+
+        viewModel.repairStoredAudioPaths()
+
+        XCTAssertEqual(empty.status, "failed")
+        XCTAssertEqual(withText.status, "completed")
+        XCTAssertFalse(viewModel.hasUsageLockedTranscriptions)
+    }
+
     func testFilteredRecordingsWithEmptySearch() throws {
         // Given
         let recording1 = Recording(createdAt: Date(), duration: 60.0, filePath: "/path1")
