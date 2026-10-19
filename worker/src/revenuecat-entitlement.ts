@@ -1,4 +1,5 @@
 const ENTITLEMENT_IDENTIFIER = "WhisperNote Pro";
+const APP_STORE_PRODUCTS = ["KirlosYousef.Whisper.AnnualThreeDayTrial", "KirlosYousef.Whisper.AnnualUnlimited"];
 
 export type StoreTransactionProof = {
   productId?: string;
@@ -7,30 +8,18 @@ export type StoreTransactionProof = {
 
 type RevenueCatCustomerResponse = {
   subscriber?: {
-    entitlements?: Record<string, {
-      product_identifier?: string;
-      expires_date?: string | null;
-      grace_period_expires_date?: string | null;
-    }>;
+    entitlements?: Record<string, unknown>;
     subscriptions?: Record<string, {
-      store?: string;
       store_transaction_id?: string | number;
-      expires_date?: string | null;
-      grace_period_expires_date?: string | null;
       refunded_at?: string | null;
     }>;
   };
 };
 
-function activeUntil(expiration?: string | null, graceExpiration?: string | null): number {
-  const expirationTime = expiration ? Date.parse(expiration) : 0;
-  const graceExpirationTime = graceExpiration ? Date.parse(graceExpiration) : 0;
-  return Math.max(
-    Number.isFinite(expirationTime) ? expirationTime : 0,
-    Number.isFinite(graceExpirationTime) ? graceExpirationTime : 0,
-  );
-}
-
+/**
+ * RevenueCat is a refund and ownership signal only: the Apple JWS (verified by the caller, including expiry)
+ * is the authoritative proof of an active subscription, and RevenueCat lags behind StoreKit after renewals and plan changes.
+ */
 export async function verifyRevenueCatEntitlement(
   appUserID: string,
   transaction: StoreTransactionProof,
@@ -42,20 +31,12 @@ export async function verifyRevenueCatEntitlement(
     headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
   });
   if (!response.ok) throw new Error("RevenueCat subscription lookup failed.");
-  const payload = await response.json() as RevenueCatCustomerResponse;
-  const entitlement = payload.subscriber?.entitlements?.[ENTITLEMENT_IDENTIFIER];
-  const subscription = payload.subscriber?.subscriptions?.[transaction.productId];
+  const subscriber = (await response.json() as RevenueCatCustomerResponse).subscriber;
+  const subscriptions = subscriber?.subscriptions ?? {};
+  const records = APP_STORE_PRODUCTS.flatMap(product => subscriptions[product] ? [subscriptions[product]] : []);
   const transactionID = String(transaction.transactionId);
-  const revenueCatTransactionID = subscription?.store_transaction_id == null
-    ? ""
-    : String(subscription.store_transaction_id);
-  return Boolean(
-    entitlement && subscription &&
-    entitlement.product_identifier === transaction.productId &&
-    subscription.store === "app_store" &&
-    subscription.refunded_at == null &&
-    revenueCatTransactionID === transactionID &&
-    activeUntil(entitlement.expires_date, entitlement.grace_period_expires_date) > Date.now() &&
-    activeUntil(subscription.expires_date, subscription.grace_period_expires_date) > Date.now()
-  );
+  const refunded = records.some(record => record.refunded_at != null && record.store_transaction_id != null &&
+    String(record.store_transaction_id) === transactionID);
+  if (refunded) return false;
+  return records.length > 0 || subscriber?.entitlements?.[ENTITLEMENT_IDENTIFIER] != null;
 }

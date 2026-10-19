@@ -49,10 +49,10 @@ function corsHeaders(): Headers {
   });
 }
 
-function jsonError(message: string, status: number): Response {
+function jsonError(message: string, status: number, code?: string): Response {
   const headers = corsHeaders();
   headers.set("Content-Type", "application/json");
-  return new Response(JSON.stringify({ error: message }), { status, headers });
+  return new Response(JSON.stringify({ error: message, ...(code ? { code } : {}) }), { status, headers });
 }
 
 function withCors(response: Response): Response {
@@ -139,6 +139,8 @@ function validateWavDurationMs(data: ArrayBuffer): number | undefined {
     if (bodyOffset + size > data.byteLength) return undefined;
     if (id === 0x666d7420 && size >= 16) {
       encoding = view.getUint16(bodyOffset, true);
+      // WAVE_FORMAT_EXTENSIBLE: the real format is the SubFormat GUID's leading uint16 at fmt body offset 24.
+      if (encoding === 0xfffe && size >= 40) encoding = view.getUint16(bodyOffset + 24, true);
       channels = view.getUint16(bodyOffset + 2, true);
       sampleRate = view.getUint32(bodyOffset + 4, true);
       byteRate = view.getUint32(bodyOffset + 8, true);
@@ -249,12 +251,12 @@ async function authorizedUsage(request: Request, env: Env): Promise<{ stub: Dura
   const authorization = request.headers.get("Authorization") ?? "";
   if (!authorization.startsWith("Bearer ")) return jsonError("Update Revera to continue processing audio.", 426);
   const claims = await verifyAccessToken(authorization.slice(7), env.USAGE_SESSION_SECRET);
-  if (!claims) return jsonError("Subscription verification expired. Reopen Revera while online.", 401);
+  if (!claims) return jsonError("Subscription verification expired. Reopen Revera while online.", 401, "session_expired");
   const stub = usageObject(env, claims.sub);
   const stateResponse = await stub.fetch("https://usage.internal/state", { method: "GET" });
-  if (!stateResponse.ok) return jsonError("Subscription state could not be verified.", 503);
+  if (!stateResponse.ok) return jsonError("Subscription state could not be verified.", 503, "temporarily_unavailable");
   const state = await stateResponse.json() as { active?: boolean; paid?: boolean };
-  if (!state.active) return jsonError("Subscription has expired.", 403);
+  if (!state.active) return jsonError("Subscription has expired.", 403, "subscription_inactive");
   return { stub, claims };
 }
 
@@ -298,9 +300,10 @@ export class TrialUsageGateway extends DurableObject<Env> {
       try {
         return Response.json(this.consume(body));
       } catch (error) {
-        if (error instanceof UsageLimitError) return Response.json({ error: "trial_exhausted", ...await this.snapshot() }, { status: 402 });
-        if (error instanceof PendingUsageOperationError) return jsonError("This processing request is already running. Retry it in a moment.", 409);
-        if (error instanceof DuplicateAudioJobError) return jsonError("This audio has already been processed for this task.", 409);
+        if (error instanceof UsageLimitError) return Response.json({ error: "trial_exhausted", code: "trial_exhausted", ...await this.snapshot() }, { status: 402 });
+        if (error instanceof SubscriptionInactiveError) return jsonError("Subscription has expired.", 403, "subscription_inactive");
+        if (error instanceof PendingUsageOperationError) return jsonError("This processing request is already running. Retry it in a moment.", 409, "operation_pending");
+        if (error instanceof DuplicateAudioJobError) return jsonError("This audio has already been processed for this task.", 409, "duplicate_audio");
         return jsonError("Usage could not be recorded.", 500);
       }
     }
@@ -345,7 +348,7 @@ export class TrialUsageGateway extends DurableObject<Env> {
 
   private consume(body: UsageRequest): UsageSnapshot {
     const subscription = this.sql.exec<{ product: string; access_tier: string; expires_at_ms: number }>("SELECT product, access_tier, expires_at_ms FROM subscription WHERE id=1").one();
-    if (!subscription || subscription.expires_at_ms <= Date.now()) throw new UsageLimitError();
+    if (!subscription || subscription.expires_at_ms <= Date.now()) throw new SubscriptionInactiveError();
     const paid = subscription.access_tier === "paid";
     const demo = subscription.product === "onboarding-demo";
     const operationID = body.operationID;
@@ -379,11 +382,31 @@ export class TrialUsageGateway extends DurableObject<Env> {
     const startMs = body.startMs;
     const endMs = startMs + body.durationMs;
     if (operationKind !== "realtime") {
-      const duplicate = this.sql.exec<{ operation_id: string }>(
-        "SELECT operation_id FROM audio_jobs WHERE audio_session_id=? AND kind=? AND start_ms < ? AND end_ms > ? LIMIT 1",
+      const overlapping = this.sql.exec<{ operation_id: string; start_ms: number; end_ms: number }>(
+        "SELECT operation_id, start_ms, end_ms FROM audio_jobs WHERE audio_session_id=? AND kind=? AND start_ms < ? AND end_ms > ?",
         body.audioSessionID, operationKind, endMs, startMs,
-      ).toArray()[0];
-      if (duplicate) throw new DuplicateAudioJobError();
+      ).toArray();
+      if (overlapping.length > 0) {
+        // Replay an identical job that already completed (e.g. a retry under a new operation ID).
+        const job = overlapping[0];
+        const cached = overlapping.length === 1 && job.start_ms === startMs && job.end_ms === endMs
+          ? this.sql.exec<{ response_status: number | null; response_content_type: string | null; response_body: string | null }>(
+            "SELECT response_status, response_content_type, response_body FROM operations WHERE operation_id=? AND state='completed'", job.operation_id,
+          ).toArray()[0]
+          : undefined;
+        if (!cached || cached.response_body == null) throw new DuplicateAudioJobError();
+        return {
+          accepted: true,
+          alreadyCounted: true,
+          chargedMs: 0,
+          cachedResponse: {
+            status: cached.response_status ?? 200,
+            contentType: cached.response_content_type ?? "application/json",
+            body: cached.response_body,
+          },
+          ...this.snapshotSync(),
+        };
+      }
     }
     const overlaps = this.sql.exec<{ start_ms: number; end_ms: number }>(
       "SELECT start_ms, end_ms FROM audio_ranges WHERE audio_session_id=? AND start_ms < ? AND end_ms > ? ORDER BY start_ms",
@@ -491,11 +514,11 @@ export class TrialUsageGateway extends DurableObject<Env> {
   }
 
   private finalizeAbandonedReservations(): void {
-    const expired = this.sql.exec<{ operation_id: string; consumed_ms: number; accounting_type: string }>(
-      "SELECT operation_id, consumed_ms, accounting_type FROM operations WHERE state='reserved' AND created_at_ms < ?",
+    const expired = this.sql.exec<{ operation_id: string }>(
+      "SELECT operation_id FROM operations WHERE state='reserved' AND created_at_ms < ?",
       Date.now() - 30 * 60_000,
     ).toArray();
-    for (const operation of expired) this.completeOperation({ operationID: operation.operation_id, status: 200 });
+    for (const operation of expired) this.releaseOperation(operation.operation_id);
   }
 
   private async startRealtime(request: Request): Promise<Response> {
@@ -632,71 +655,12 @@ type UsageSnapshot = {
   cachedResponse?: { status: number; contentType: string; body: string } | null;
 };
 class UsageLimitError extends Error {}
+class SubscriptionInactiveError extends Error {}
 class PendingUsageOperationError extends Error {}
 class DuplicateAudioJobError extends Error {}
 
-function cropWavToRanges(data: ArrayBuffer, ranges: Array<{ startMs: number; endMs: number }>): Uint8Array | undefined {
-  const view = new DataView(data);
-  let offset = 12;
-  let format: number | undefined;
-  let channels: number | undefined;
-  let sampleRate: number | undefined;
-  let blockAlign: number | undefined;
-  let bitDepth: number | undefined;
-  let audioOffset: number | undefined;
-  let audioLength: number | undefined;
-  while (offset + 8 <= data.byteLength) {
-    const id = view.getUint32(offset, false);
-    const size = view.getUint32(offset + 4, true);
-    const bodyOffset = offset + 8;
-    if (bodyOffset + size > data.byteLength) return undefined;
-    if (id === 0x666d7420 && size >= 16) {
-      format = view.getUint16(bodyOffset, true);
-      channels = view.getUint16(bodyOffset + 2, true);
-      sampleRate = view.getUint32(bodyOffset + 4, true);
-      blockAlign = view.getUint16(bodyOffset + 12, true);
-      bitDepth = view.getUint16(bodyOffset + 14, true);
-    }
-    if (id === 0x64617461) {
-      audioOffset = bodyOffset;
-      audioLength = size;
-      break;
-    }
-    offset = bodyOffset + size + (size % 2);
-  }
-  if (format !== 1 || channels !== 1 || bitDepth !== 16 || !sampleRate || blockAlign !== 2 || audioOffset == null || audioLength == null) return undefined;
-  const source = new Uint8Array(data, audioOffset, audioLength);
-  const frameCount = Math.floor(source.length / blockAlign);
-  const pieces: Uint8Array[] = [];
-  for (const range of ranges) {
-    const firstFrame = Math.max(0, Math.min(frameCount, Math.floor(range.startMs * sampleRate / 1_000)));
-    const lastFrame = Math.max(firstFrame, Math.min(frameCount, Math.ceil(range.endMs * sampleRate / 1_000)));
-    if (lastFrame > firstFrame) pieces.push(source.subarray(firstFrame * blockAlign, lastFrame * blockAlign));
-  }
-  const payloadLength = pieces.reduce((sum, piece) => sum + piece.length, 0);
-  if (payloadLength === 0 || payloadLength + 36 > 0xffff_ffff) return undefined;
-  const result = new Uint8Array(44 + payloadLength);
-  const output = new DataView(result.buffer);
-  const writeTag = (at: number, value: string) => result.set(new TextEncoder().encode(value), at);
-  writeTag(0, "RIFF");
-  output.setUint32(4, 36 + payloadLength, true);
-  writeTag(8, "WAVE");
-  writeTag(12, "fmt ");
-  output.setUint32(16, 16, true);
-  output.setUint16(20, 1, true);
-  output.setUint16(22, 1, true);
-  output.setUint32(24, sampleRate, true);
-  output.setUint32(28, sampleRate * blockAlign, true);
-  output.setUint16(32, blockAlign, true);
-  output.setUint16(34, 16, true);
-  writeTag(36, "data");
-  output.setUint32(40, payloadLength, true);
-  let outputOffset = 44;
-  for (const piece of pieces) { result.set(piece, outputOffset); outputOffset += piece.length; }
-  return result;
-}
-
 async function proxyHTTP(request: Request, env: Env, path: string, claims: AccessClaims, stub: DurableObjectStub<TrialUsageGateway>): Promise<Response> {
+  let operationID: string | undefined;
   if (path === "/v1/audio/transcriptions") {
     const contentLength = Number(request.headers.get("content-length") ?? 0);
     if (contentLength > MAX_AUDIO_BYTES) return jsonError("Audio request is too large.", 413);
@@ -706,7 +670,7 @@ async function proxyHTTP(request: Request, env: Env, path: string, claims: Acces
     if (!(audio instanceof File) || audio.size <= 0 || audio.size > MAX_AUDIO_BYTES) return jsonError("A valid audio file is required.", 400);
     const durationMs = validateWavDurationMs(await audio.arrayBuffer());
     if (!durationMs) return jsonError("Audio duration could not be verified.", 400);
-    const operationID = request.headers.get("X-Usage-Operation-ID") ?? crypto.randomUUID();
+    operationID = request.headers.get("X-Usage-Operation-ID") ?? crypto.randomUUID();
     const audioSessionID = request.headers.get("X-Audio-Session-ID") ?? operationID;
     const startMsHeader = Number(request.headers.get("X-Audio-Start-MS") ?? 0);
     if (!Number.isSafeInteger(startMsHeader) || startMsHeader < 0) return jsonError("Invalid audio range.", 400);
@@ -715,9 +679,8 @@ async function proxyHTTP(request: Request, env: Env, path: string, claims: Acces
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ operationID, audioSessionID, startMs: startMsHeader, durationMs, operationKind }),
     });
-    if (usageResponse.status === 402) return withCors(usageResponse);
-    if (usageResponse.status === 409) return withCors(usageResponse);
-    if (!usageResponse.ok) return jsonError("Usage could not be recorded. Try again.", 503);
+    if (usageResponse.status >= 400 && usageResponse.status < 500) return withCors(usageResponse);
+    if (!usageResponse.ok) return jsonError("Usage could not be recorded. Try again.", 503, "temporarily_unavailable");
     const usage = await usageResponse.json() as UsageSnapshot;
     if (usage.cachedResponse) {
       return withCors(new Response(usage.cachedResponse.body, {
@@ -725,38 +688,28 @@ async function proxyHTTP(request: Request, env: Env, path: string, claims: Acces
         headers: { "Content-Type": usage.cachedResponse.contentType },
       }));
     }
-    if (usage.alreadyCounted) return jsonError("The previous result is unavailable; retry is blocked to prevent duplicate processing charges.", 409);
-    if (usage.uncoveredRanges?.length && (usage.chargedMs ?? 0) < durationMs) {
-      const cropped = cropWavToRanges(await audio.arrayBuffer(), usage.uncoveredRanges);
-      if (cropped) form.set("file", new File([cropped], audio.name, { type: audio.type || "audio/wav" }));
-    }
+    if (usage.alreadyCounted) return jsonError("The previous result is unavailable; retry is blocked to prevent duplicate processing charges.", 409, "duplicate_audio");
     const headers = new Headers(request.headers);
     headers.delete("content-type");
     headers.delete("content-length");
     request = new Request(request.url, { method: "POST", headers, body: form });
   }
-  const headers = openAIHeaders(request, env.OPENAI_API_KEY);
   let upstream: Response;
   try {
-    upstream = await fetch(`${openAIBase(env)}${path}`, { method: "POST", headers, body: request.body });
+    upstream = await fetch(`${openAIBase(env)}${path}`, { method: "POST", headers: openAIHeaders(request, env.OPENAI_API_KEY), body: request.body });
   } catch {
-    return jsonError("The transcription result is being verified. Retry shortly.", 503);
+    if (operationID) await stub.fetch("https://usage.internal/release", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ operationID }) });
+    return jsonError("Transcription service is unavailable. Retry shortly.", 503, "temporarily_unavailable");
   }
-  if (path === "/v1/audio/transcriptions" && request.method === "POST") {
-    const operationID = request.headers.get("X-Usage-Operation-ID");
-    if (operationID) {
-      if (upstream.status >= 200 && upstream.status < 300) {
-        const responseBody = await upstream.clone().text();
-        await stub.fetch("https://usage.internal/complete", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ operationID, status: upstream.status, contentType: upstream.headers.get("Content-Type") ?? "application/json", responseBody }),
-        });
-      } else if (upstream.status < 500) {
-        await stub.fetch("https://usage.internal/release", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ operationID }),
-        });
-      }
+  if (operationID) {
+    if (upstream.ok) {
+      const responseBody = await upstream.clone().text();
+      await stub.fetch("https://usage.internal/complete", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ operationID, status: upstream.status, contentType: upstream.headers.get("Content-Type") ?? "application/json", responseBody }),
+      });
+    } else {
+      await stub.fetch("https://usage.internal/release", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ operationID }) });
     }
   }
   return withCors(upstream);
