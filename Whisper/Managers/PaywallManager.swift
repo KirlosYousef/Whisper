@@ -266,11 +266,15 @@ final class UsageAccessManager: ObservableObject {
     @Published private(set) var snapshot: UsageAccessSnapshot?
     @Published private(set) var isResolving = false
     @Published private(set) var shouldShowFiveMinuteWarning = false
+    @Published private(set) var lastAccessError: UsageAccessError?
+    /// Set while an unlimited plan change is queued to start when the current trial ends.
+    @Published private(set) var scheduledUnlimitedStart: Date?
 
     private var appToken: String?
     private var appTokenExpiresAt = Date.distantPast
     private var demoToken: String?
     private var demoTokenExpiresAt = Date.distantPast
+    private var sessionTask: Task<SessionResponse, Error>?
 
     private struct SessionResponse: Decodable {
         let token: String
@@ -295,8 +299,45 @@ final class UsageAccessManager: ObservableObject {
         }
 
         if let appToken, appTokenExpiresAt > Date().addingTimeInterval(30) {
+            lastAccessError = nil
             return "Bearer \(appToken)"
         }
+        let response: SessionResponse
+        do {
+            response = try await fetchAppSession()
+        } catch let error as UsageAccessError {
+            lastAccessError = error
+            throw error
+        }
+        lastAccessError = nil
+        appToken = response.token
+        appTokenExpiresAt = Date().addingTimeInterval(270)
+        updateSnapshot(response.usage)
+        return "Bearer \(response.token)"
+    }
+
+    /// Concurrent callers (several segments asking for a token at once) share one session request.
+    private func fetchAppSession() async throws -> SessionResponse {
+        if let sessionTask {
+            return try await sessionTask.value
+        }
+        let task = Task { try await self.createAppSession() }
+        sessionTask = task
+        defer { sessionTask = nil }
+        return try await task.value
+    }
+
+    private func createAppSession() async throws -> SessionResponse {
+        do {
+            return try await requestAppSession()
+        } catch UsageAccessError.noVerifiedSubscription {
+            // RevenueCat may not have seen the purchase yet; sync once and retry.
+            _ = try? await Purchases.shared.syncPurchases()
+            return try await requestAppSession()
+        }
+    }
+
+    private func requestAppSession() async throws -> SessionResponse {
         let signedTransactions = await signedActiveSubscriptionTransactions()
         guard !signedTransactions.isEmpty else { throw UsageAccessError.noVerifiedSubscription }
         var request = URLRequest(url: URL(string: "\(OpenAIConfiguration.workerBaseURL)/usage/session")!)
@@ -306,11 +347,7 @@ final class UsageAccessManager: ObservableObject {
             "appUserID": Purchases.shared.appUserID,
             "signedTransactions": signedTransactions
         ])
-        let response = try await sendSessionRequest(request)
-        appToken = response.token
-        appTokenExpiresAt = Date().addingTimeInterval(270)
-        updateSnapshot(response.usage)
-        return "Bearer \(response.token)"
+        return try await sendSessionRequest(request)
     }
 
     func refresh(force: Bool = false) async {
@@ -322,10 +359,53 @@ final class UsageAccessManager: ObservableObject {
         }
         do {
             _ = try await authorizationHeader()
+            if snapshot?.state == "trial" {
+                await updateScheduledUnlimitedStart()
+            } else if snapshot?.state == "paid" {
+                scheduledUnlimitedStart = nil
+            }
+        } catch let error as UsageAccessError {
+            // Only a definitive answer clears the snapshot; transient and trial errors keep the last known state.
+            switch error {
+            case .noVerifiedSubscription, .updateRequired:
+                snapshot = nil
+            case .trialExhausted, .verificationPending:
+                break
+            }
+            print("Usage access refresh: \(error.localizedDescription)")
         } catch {
-            if error is UsageAccessError { snapshot = nil }
+            // Network failures keep the last snapshot.
             print("Usage access refresh: \(error.localizedDescription)")
         }
+    }
+
+    /// RevenueCat and StoreKit propagate a purchase with a delay, so poll the Worker for a few seconds.
+    /// Returns true once the Worker reports paid usage.
+    func refreshAfterPurchase() async -> Bool {
+        invalidateSession()
+        for delay in [0, 1, 2, 4, 8] {
+            if delay > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(delay) * 1_000_000_000)
+            }
+            await refresh(force: true)
+            if snapshot?.state == "paid" { return true }
+        }
+        await updateScheduledUnlimitedStart()
+        return false
+    }
+
+    /// An unlimited plan purchased during a trial may be scheduled to start when the trial ends.
+    func updateScheduledUnlimitedStart() async {
+        var scheduled: Date?
+        for await result in StoreKit.Transaction.currentEntitlements {
+            guard case .verified(let transaction) = result,
+                  transaction.productID == Self.trialProductID,
+                  let status = await transaction.subscriptionStatus,
+                  case .verified(let renewal) = status.renewalInfo,
+                  renewal.autoRenewPreference == Self.unlimitedProductID else { continue }
+            scheduled = transaction.expirationDate
+        }
+        scheduledUnlimitedStart = scheduled
     }
 
     func invalidateSession() {

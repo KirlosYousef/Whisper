@@ -27,15 +27,7 @@ final class RealtimeTranscriptionService {
     private var isStopping = false
     private var connectionToken = UUID()
     private var uncommittedAudioByteCount = 0
-    private struct PendingAudioChunk {
-        let data: Data
-        let startMs: Int
-    }
-    private var pendingAudioChunks: [PendingAudioChunk] = []
-    private var pendingAudioByteCount = 0
-    private var outgoingAudioBuffer = Data()
-    private var outgoingAudioStartMs = 0
-    private var nextAudioOffsetMs = 0
+    private var audioTimeline = RealtimeAudioTimeline(startOffsetMs: 0)
     private var commitTimer: DispatchSourceTimer?
     private var pingTimer: DispatchSourceTimer?
     private var skippedCommitIntervals = 0
@@ -72,8 +64,6 @@ final class RealtimeTranscriptionService {
         lastLanguages = languages
         self.audioSessionID = audioSessionID
         self.audioStartOffsetMs = max(0, startOffsetMs)
-        self.nextAudioOffsetMs = max(0, startOffsetMs)
-        self.outgoingAudioStartMs = max(0, startOffsetMs)
         self.isOnboardingDemo = isOnboardingDemo
         reconnectAttempts = 0
         isReconnectScheduled = false
@@ -87,16 +77,13 @@ final class RealtimeTranscriptionService {
         guard !pcm16Data.isEmpty else { return }
         sendQueue.async { [weak self] in
             guard let self, !self.isStopping else { return }
-            let chunkStartMs = self.nextAudioOffsetMs
-            self.nextAudioOffsetMs += pcm16Data.count / 48
+            self.audioTimeline.enqueue(pcm16Data)
             if self.isSocketOpen, self.isSessionReady {
-                if self.outgoingAudioBuffer.isEmpty { self.outgoingAudioStartMs = chunkStartMs }
-                self.outgoingAudioBuffer.append(pcm16Data)
-                if self.outgoingAudioBuffer.count >= self.appendChunkByteCount {
-                    self.flushOutgoingAudioOnQueue()
+                if self.audioTimeline.bufferedByteCount >= self.appendChunkByteCount {
+                    self.flushOutgoingAudioOnQueue(flushRemainder: false)
                 }
             } else {
-                self.bufferPendingAudioOnQueue(pcm16Data, startMs: chunkStartMs)
+                self.audioTimeline.dropOldest(toFit: self.maximumPendingAudioByteCount)
             }
         }
     }
@@ -104,7 +91,7 @@ final class RealtimeTranscriptionService {
     func finish() {
         isStopping = true
         sendQueue.async { [weak self] in
-            self?.flushOutgoingAudioOnQueue()
+            self?.flushOutgoingAudioOnQueue(flushRemainder: true)
             self?.commitAudioBufferOnQueue(force: true)
         }
     }
@@ -164,11 +151,7 @@ final class RealtimeTranscriptionService {
         webSocket = nil
         if resetBuffers {
             uncommittedAudioByteCount = 0
-            pendingAudioChunks = []
-            pendingAudioByteCount = 0
-            outgoingAudioBuffer = Data()
-            outgoingAudioStartMs = audioStartOffsetMs
-            nextAudioOffsetMs = audioStartOffsetMs
+            audioTimeline.reset(startOffsetMs: audioStartOffsetMs)
             skippedCommitIntervals = 0
         }
         if notify {
@@ -261,7 +244,7 @@ final class RealtimeTranscriptionService {
             return
         }
 
-        flushOutgoingAudioOnQueue()
+        flushOutgoingAudioOnQueue(flushRemainder: false)
 
         let requiredBytes: Int
         if force {
@@ -286,13 +269,12 @@ final class RealtimeTranscriptionService {
         sendJSONOnQueue(["type": "input_audio_buffer.commit"])
     }
 
-    private func flushOutgoingAudioOnQueue() {
-        guard !outgoingAudioBuffer.isEmpty else { return }
-        let data = outgoingAudioBuffer
-        let startMs = outgoingAudioStartMs
-        outgoingAudioBuffer = Data()
-        outgoingAudioStartMs += data.count / 48
-        appendAudioOnQueue(data, startMs: startMs)
+    private func flushOutgoingAudioOnQueue(flushRemainder: Bool) {
+        guard isSocketOpen, isSessionReady else { return }
+        let appends = audioTimeline.takeAppends(maxBytes: appendChunkByteCount, flushRemainder: flushRemainder)
+        for append in appends {
+            appendAudioOnQueue(append.data, startMs: append.startMs)
+        }
     }
 
     private func appendAudioOnQueue(_ pcm16Data: Data, startMs: Int) {
@@ -304,30 +286,12 @@ final class RealtimeTranscriptionService {
         ])
     }
 
-    private func bufferPendingAudioOnQueue(_ pcm16Data: Data, startMs: Int) {
-        pendingAudioChunks.append(PendingAudioChunk(data: pcm16Data, startMs: startMs))
-        pendingAudioByteCount += pcm16Data.count
-
-        while pendingAudioByteCount > maximumPendingAudioByteCount, !pendingAudioChunks.isEmpty {
-            let dropped = pendingAudioChunks.removeFirst()
-            pendingAudioByteCount -= dropped.data.count
-        }
-    }
-
     private func markSessionReady() {
         sendQueue.async { [weak self] in
             guard let self, self.isSocketOpen, !self.isSessionReady else { return }
             self.isSessionReady = true
             self.reconnectAttempts = 0
-            let chunks = self.pendingAudioChunks
-            self.pendingAudioChunks = []
-            self.pendingAudioByteCount = 0
-            for chunk in chunks {
-                if self.outgoingAudioBuffer.isEmpty { self.outgoingAudioStartMs = chunk.startMs }
-                self.outgoingAudioBuffer.append(chunk.data)
-                if self.outgoingAudioBuffer.count >= self.appendChunkByteCount { self.flushOutgoingAudioOnQueue() }
-            }
-            self.flushOutgoingAudioOnQueue()
+            self.flushOutgoingAudioOnQueue(flushRemainder: false)
             DispatchQueue.main.async {
                 self.onEvent?(.connected)
             }

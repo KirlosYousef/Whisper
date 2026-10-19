@@ -41,6 +41,30 @@ final class RecordingViewModelTests: XCTestCase {
         XCTAssertTrue(viewModel.searchText.isEmpty)
     }
     
+    func testUsageLockedSegmentMakesHasUsageLockedTranscriptionsTrue() throws {
+        let recording = Recording(createdAt: Date(), duration: 60.0, filePath: "/locked")
+        let segment = TranscriptionSegment(text: "", status: "locked", timestamp: 0, filePath: "/locked/a.wav", recording: recording)
+        modelContext.insert(recording)
+        modelContext.insert(segment)
+        try modelContext.save()
+
+        viewModel.fetchRecordings()
+
+        XCTAssertTrue(viewModel.hasUsageLockedTranscriptions)
+    }
+
+    func testCompletedSegmentDoesNotMakeHasUsageLockedTranscriptionsTrue() throws {
+        let recording = Recording(createdAt: Date(), duration: 60.0, filePath: "/completed")
+        let segment = TranscriptionSegment(text: "Done", status: "completed", timestamp: 0, filePath: "/completed/a.wav", recording: recording)
+        modelContext.insert(recording)
+        modelContext.insert(segment)
+        try modelContext.save()
+
+        viewModel.fetchRecordings()
+
+        XCTAssertFalse(viewModel.hasUsageLockedTranscriptions)
+    }
+
     func testFilteredRecordingsWithEmptySearch() throws {
         // Given
         let recording1 = Recording(createdAt: Date(), duration: 60.0, filePath: "/path1")
