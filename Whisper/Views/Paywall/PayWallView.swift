@@ -77,8 +77,7 @@ struct PayWallView: View {
                 }
                 track("Paywall Purchase Completed", properties: properties)
                 PaywallManager.shared.recordCompletedPaywallPurchase(customerInfo: customerInfo)
-                UsageAccessManager.shared.invalidateSession()
-                Task { await UsageAccessManager.shared.refresh(force: true) }
+                Task { _ = await UsageAccessManager.shared.refreshAfterPurchase() }
             }
             .onPurchaseCancelled {
                 track("Paywall Purchase Cancelled", properties: activePackageProperties)

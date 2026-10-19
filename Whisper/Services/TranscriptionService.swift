@@ -93,7 +93,7 @@ class TranscriptionService {
             guard let self else { return }
 
             if let error {
-                if error is UsageAccessError {
+                if error is UsageAccessError || (error as? TranscriptionError) == .alreadyProcessed {
                     completion(nil, error)
                     return
                 }
@@ -205,41 +205,13 @@ class TranscriptionService {
                 )
                 let (data, response) = try await URLSession.shared.data(for: authorizedRequest)
             
-            if let httpResponse = response as? HTTPURLResponse {
-                if httpResponse.statusCode == 429 {
-                    completion(nil, TranscriptionError.rateLimited)
-                    return
-                } else if httpResponse.statusCode >= 400 {
-                    if httpResponse.statusCode == 402 {
-                        completion(nil, UsageAccessError.trialExhausted)
-                        return
-                    }
-                    if httpResponse.statusCode == 403 {
-                        completion(nil, UsageAccessError.noVerifiedSubscription)
-                        return
-                    }
-                    if httpResponse.statusCode == 426 {
-                        completion(nil, UsageAccessError.updateRequired)
-                        return
-                    }
-                    if httpResponse.statusCode == 409 || httpResponse.statusCode == 503 {
-                        completion(nil, UsageAccessError.verificationPending)
-                        return
-                    }
-                    if httpResponse.statusCode >= 500 {
-                        completion(nil, TranscriptionError.serverError)
-                        return
-                    }
-                    // Try to parse error message from body
-                    if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                       let message = json["error"] as? String {
-                        completion(nil, NSError(domain: "TranscriptionService", code: httpResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: message]))
-                        return
-                    } else {
-                        completion(nil, TranscriptionError.invalidResponse)
-                        return
-                    }
+            if let httpResponse = response as? HTTPURLResponse,
+               let error = Self.responseError(forStatus: httpResponse.statusCode, body: data) {
+                if httpResponse.statusCode == 401 || httpResponse.statusCode == 403 {
+                    await UsageAccessManager.shared.invalidateSession()
                 }
+                completion(nil, error)
+                return
             }
             
             if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -257,6 +229,42 @@ class TranscriptionService {
             } catch {
                 completion(nil, error)
             }
+        }
+    }
+
+    /// Maps a Worker response status to the error the caller should see, or nil when the response is usable.
+    /// Side effects (such as invalidating the usage session on 401/403) belong to the caller.
+    static func responseError(forStatus statusCode: Int, body: Data?) -> Error? {
+        guard statusCode >= 400 else { return nil }
+        if statusCode >= 500 { return TranscriptionError.serverError }
+
+        var json: [String: Any]?
+        if let body {
+            json = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any]
+        }
+
+        switch statusCode {
+        case 401:
+            return TranscriptionError.serverError
+        case 402:
+            return UsageAccessError.trialExhausted
+        case 403:
+            return UsageAccessError.noVerifiedSubscription
+        case 409:
+            let code = json?["code"] as? String
+            if code == "operation_pending" {
+                return TranscriptionError.serverError
+            }
+            return TranscriptionError.alreadyProcessed
+        case 426:
+            return UsageAccessError.updateRequired
+        case 429:
+            return TranscriptionError.rateLimited
+        default:
+            if let message = json?["error"] as? String {
+                return NSError(domain: "TranscriptionService", code: statusCode, userInfo: [NSLocalizedDescriptionKey: message])
+            }
+            return TranscriptionError.invalidResponse
         }
     }
 
@@ -350,14 +358,12 @@ class TranscriptionService {
                 var authorizedRequest = request
                 authorizedRequest.setValue(try await UsageAccessManager.shared.authorizationHeader(), forHTTPHeaderField: "Authorization")
                 let (data, response) = try await session.data(for: authorizedRequest)
-                if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode >= 400 {
-                    if httpResponse.statusCode == 402 { completion(.failure(UsageAccessError.trialExhausted)); return }
-                    if httpResponse.statusCode == 403 { completion(.failure(UsageAccessError.noVerifiedSubscription)); return }
-                    if httpResponse.statusCode == 426 { completion(.failure(UsageAccessError.updateRequired)); return }
-                    if httpResponse.statusCode == 409 || httpResponse.statusCode == 503 { completion(.failure(UsageAccessError.verificationPending)); return }
-                    if httpResponse.statusCode == 429 { completion(.failure(TranscriptionError.rateLimited)); return }
-                    if httpResponse.statusCode >= 500 { completion(.failure(TranscriptionError.serverError)); return }
-                    completion(.failure(TranscriptionError.invalidResponse))
+                if let httpResponse = response as? HTTPURLResponse,
+                   let error = Self.responseError(forStatus: httpResponse.statusCode, body: data) {
+                    if httpResponse.statusCode == 401 || httpResponse.statusCode == 403 {
+                        await UsageAccessManager.shared.invalidateSession()
+                    }
+                    completion(.failure(error))
                     return
                 }
                 let parsed = try Self.parseDiarizedJSON(data)
@@ -378,6 +384,7 @@ enum TranscriptionError: LocalizedError {
     case invalidResponse
     case fallbackUnavailable
     case apiKeyNotConfigured
+    case alreadyProcessed
     
     var errorDescription: String? {
         switch self {
@@ -393,6 +400,8 @@ enum TranscriptionError: LocalizedError {
             return "Local transcription not available"
         case .apiKeyNotConfigured:
             return "AI service is not configured. Please update the Worker URL."
+        case .alreadyProcessed:
+            return "This audio was already processed."
         }
     }
 }

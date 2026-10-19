@@ -98,26 +98,34 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         recordings.contains { recording in recording.segments.contains { $0.status == "locked" } }
     }
 
-    func retryUsageLockedTranscriptionsWhenAccessIsAvailable() {
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            await UsageAccessManager.shared.refresh(force: true)
-            guard let access = UsageAccessManager.shared.snapshot,
-                  access.state == "paid" || (access.state == "trial" && (access.remainingMs ?? 0) > 0) else { return }
-            if access.state == "paid" { self.isTrialUsageExhausted = false }
-            self.clearErrorMessage()
-            let segments = self.recordings.flatMap(\.segments).filter { $0.status == "locked" }
-            for segment in segments {
-                guard let recording = segment.recording else { continue }
-                let url = URL(fileURLWithPath: segment.filePath)
-                guard FileManager.default.fileExists(atPath: url.path) else { continue }
-                self.startFileTranscription(
-                    url: url,
-                    duration: max(recording.duration, 0.1),
-                    startTime: segment.timestamp,
-                    recording: recording
-                )
-            }
+    @MainActor
+    func retryUsageLockedTranscriptionsWhenAccessIsAvailable(refreshFirst: Bool = true) async {
+        let usageAccess = UsageAccessManager.shared
+        if refreshFirst {
+            await usageAccess.refresh(force: true)
+        }
+        guard let access = usageAccess.snapshot,
+              access.state == "paid" || (access.state == "trial" && (access.remainingMs ?? 0) > 0) else {
+            let trialExhausted = usageAccess.lastAccessError == .trialExhausted || usageAccess.snapshot?.remainingMs == 0
+            let reason: UsageAccessError = trialExhausted ? .trialExhausted : .noVerifiedSubscription
+            setErrorMessage(reason.localizedDescription)
+            return
+        }
+        isTrialUsageExhausted = false
+        clearErrorMessage()
+        let segments = recordings.flatMap(\.segments).filter {
+            $0.status == "locked" && !inFlightSegmentTranscriptions.contains($0.id)
+        }
+        for segment in segments {
+            guard let recording = segment.recording else { continue }
+            let url = URL(fileURLWithPath: segment.filePath)
+            guard FileManager.default.fileExists(atPath: url.path) else { continue }
+            startFileTranscription(
+                url: url,
+                duration: max(recording.duration, 0.1),
+                startTime: segment.timestamp,
+                recording: recording
+            )
         }
     }
 
@@ -920,6 +928,15 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                     "segment_duration": duration,
                     "segment_start_time": segment.timestamp
                 ])
+            } else if let transcriptionError = error as? TranscriptionError, transcriptionError == .alreadyProcessed {
+                // Retrying cannot help and this is not a subscription problem, so never lock the segment.
+                if existingText.isEmpty {
+                    segment.status = "failed"
+                    setErrorMessage("Transcription failed: \(error.localizedDescription)")
+                } else {
+                    segment.status = "completed"
+                    assignTitleIfNeeded(to: rec, from: existingText)
+                }
             } else if !existingText.isEmpty {
                 segment.status = "completed"
                 assignTitleIfNeeded(to: rec, from: existingText)
@@ -1028,11 +1045,14 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                                         self?.isTrialUsageExhausted = true
                                     }
                                     self?.setErrorMessage(accessError.localizedDescription)
+                                    segment.text = ""
+                                } else if let transcriptionError = error as? TranscriptionError, transcriptionError == .alreadyProcessed {
+                                    // Not a subscription problem and retrying will not help: keep any text we already have.
+                                    let hasText = !segment.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                    segment.status = hasText ? "completed" : "failed"
                                 } else {
                                     segment.status = "failed"
-                                }
-                                segment.text = ""
-                                if !(error is UsageAccessError) {
+                                    segment.text = ""
                                     self?.setErrorMessage("Transcription failed: \(error.localizedDescription)")
                                 }
                             } else if let text = text {
