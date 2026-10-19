@@ -110,6 +110,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         if refreshFirst {
             await usageAccess.refresh(force: true)
         }
+        repairStoredAudioPaths()
         guard usageAccess.accessState.canTranscribe else {
             if usageAccess.accessState.isTrialExhausted {
                 isTrialUsageExhausted = true
@@ -124,13 +125,44 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         for segment in segments {
             guard let recording = segment.recording else { continue }
             let url = URL(fileURLWithPath: segment.filePath)
-            guard FileManager.default.fileExists(atPath: url.path) else { continue }
             startFileTranscription(
                 url: url,
                 duration: max(recording.duration, 0.1),
                 startTime: segment.timestamp,
                 recording: recording
             )
+        }
+    }
+
+    /// Points saved paths back at their files after iOS moved the app's data folder, and gives up on audio
+    /// that waits for transcription but no longer exists, so it can't hold the "saved audio" banner forever.
+    func repairStoredAudioPaths() {
+        guard let recordings = try? modelContext.fetch(FetchDescriptor<Recording>()) else { return }
+        var changed = false
+        for recording in recordings {
+            if let url = AudioService.resolvedAudioURL(forStoredPath: recording.filePath), url.path != recording.filePath {
+                recording.filePath = url.path
+                changed = true
+            }
+            for segment in recording.segments {
+                for keyPath in [\TranscriptionSegment.filePath, \TranscriptionSegment.sessionFilePath] {
+                    let stored = segment[keyPath: keyPath]
+                    if let url = AudioService.resolvedAudioURL(forStoredPath: stored), url.path != stored {
+                        segment[keyPath: keyPath] = url.path
+                        changed = true
+                    }
+                }
+                let waiting = segment.status == "locked" || segment.status == "queued"
+                if waiting, !inFlightSegmentTranscriptions.contains(segment.id),
+                   AudioService.resolvedAudioURL(forStoredPath: segment.filePath) == nil {
+                    segment.status = segment.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "failed" : "completed"
+                    changed = true
+                }
+            }
+        }
+        if changed {
+            try? modelContext.save()
+            fetchRecordings()
         }
     }
 
@@ -147,6 +179,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         self.audioService = AudioService()
         self.transcriptionService = TranscriptionService()
         self.realtimeTranscriptionService = RealtimeTranscriptionService()
+        repairStoredAudioPaths()
         fetchRecordings()
         audioService.delegate = self
         configureRealtimeCallbacks()
@@ -1145,9 +1178,8 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         )
         guard let queuedSegments = try? modelContext.fetch(descriptor) else { return }
         for segment in queuedSegments where !inFlightSegmentTranscriptions.contains(segment.id) {
-            guard let recording = segment.recording else { continue }
-            let url = URL(fileURLWithPath: segment.filePath)
-            guard FileManager.default.fileExists(atPath: url.path) else { continue }
+            guard let recording = segment.recording,
+                  let url = AudioService.resolvedAudioURL(forStoredPath: segment.filePath) else { continue }
             startFileTranscription(url: url, duration: 20, startTime: segment.timestamp, recording: recording)
         }
     }
