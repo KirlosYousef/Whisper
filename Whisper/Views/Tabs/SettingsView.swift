@@ -61,7 +61,7 @@ struct SettingsView: View {
                             iconName: "person.3.fill",
                             title: "Identify speakers",
                             trailingView: Toggle("", isOn: $store.identifySpeakers)
-                                .tint(Color.accentColor),
+                                .tint(AppTheme.toggleOn),
                             hasChevron: false)
                     }
                     .buttonStyle(.plain)
@@ -78,7 +78,7 @@ struct SettingsView: View {
                             iconName: "iphone.radiowaves.left.and.right",
                             title: "Haptics",
                             trailingView: Toggle("", isOn: $store.hapticsEnabled)
-                                .tint(Color.accentColor),
+                                .tint(AppTheme.toggleOn),
                             hasChevron: false)
                     }
                     .buttonStyle(.plain)
