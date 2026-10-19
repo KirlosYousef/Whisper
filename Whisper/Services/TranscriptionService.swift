@@ -24,15 +24,43 @@ class TranscriptionService {
         }
     }
     
-    func transcribe(audioURL: URL, segmentStart: TimeInterval, duration: TimeInterval, completion: @escaping (String?, Error?) -> Void) {
+    func transcribe(
+        audioURL: URL,
+        segmentStart: TimeInterval,
+        duration: TimeInterval,
+        audioSessionID: String? = nil,
+        isOnboardingDemo: Bool = false,
+        completion: @escaping (String?, Error?) -> Void
+    ) {
         // Network connectivity is checked in RecordingViewModel using NetworkMonitor
         // No blocking check needed here - let the API call fail naturally if offline
-        transcribeWithRetry(audioURL: audioURL, retryCount: 0, completion: completion)
+        let operationID = UUID().uuidString
+        transcribeWithRetry(
+            audioURL: audioURL,
+            retryCount: 0,
+            operationID: operationID,
+            audioSessionID: audioSessionID ?? operationID,
+            startMs: max(0, Int((segmentStart * 1_000).rounded(.down))),
+            isOnboardingDemo: isOnboardingDemo,
+            completion: completion
+        )
     }
 
-    func transcribe(audioURL: URL, segmentStart: TimeInterval, duration: TimeInterval) async throws -> String {
+    func transcribe(
+        audioURL: URL,
+        segmentStart: TimeInterval,
+        duration: TimeInterval,
+        audioSessionID: String? = nil,
+        isOnboardingDemo: Bool = false
+    ) async throws -> String {
         try await withCheckedThrowingContinuation { continuation in
-            transcribe(audioURL: audioURL, segmentStart: segmentStart, duration: duration) { text, error in
+            transcribe(
+                audioURL: audioURL,
+                segmentStart: segmentStart,
+                duration: duration,
+                audioSessionID: audioSessionID,
+                isOnboardingDemo: isOnboardingDemo
+            ) { text, error in
                 if let error {
                     continuation.resume(throwing: error)
                 } else if let text {
@@ -44,17 +72,37 @@ class TranscriptionService {
         }
     }
     
-    private func transcribeWithRetry(audioURL: URL, retryCount: Int, model: String = OpenAIConfiguration.fileTranscriptionModel, completion: @escaping (String?, Error?) -> Void) {
-        transcribeWithOpenAI(audioURL: audioURL, model: model) { [weak self] text, error in
+    private func transcribeWithRetry(
+        audioURL: URL,
+        retryCount: Int,
+        model: String = OpenAIConfiguration.fileTranscriptionModel,
+        operationID: String,
+        audioSessionID: String,
+        startMs: Int,
+        isOnboardingDemo: Bool,
+        completion: @escaping (String?, Error?) -> Void
+    ) {
+        transcribeWithOpenAI(
+            audioURL: audioURL,
+            model: model,
+            operationID: operationID,
+            audioSessionID: audioSessionID,
+            startMs: startMs,
+            isOnboardingDemo: isOnboardingDemo
+        ) { [weak self] text, error in
             guard let self else { return }
 
             if let error {
+                if error is UsageAccessError {
+                    completion(nil, error)
+                    return
+                }
                 if self.isRetryable(error), retryCount < self.maxRetries {
                     let base = TimeInterval(pow(2.0, Double(retryCount)))
                     let jitter = Double.random(in: 0...0.5)
                     let delay = min(30.0, base + jitter)
                     DispatchQueue.global().asyncAfter(deadline: .now() + delay) {
-                        self.transcribeWithRetry(audioURL: audioURL, retryCount: retryCount + 1, model: model, completion: completion)
+                        self.transcribeWithRetry(audioURL: audioURL, retryCount: retryCount + 1, model: model, operationID: operationID, audioSessionID: audioSessionID, startMs: startMs, isOnboardingDemo: isOnboardingDemo, completion: completion)
                     }
                     return
                 }
@@ -64,6 +112,10 @@ class TranscriptionService {
                         audioURL: audioURL,
                         retryCount: 0,
                         model: OpenAIConfiguration.fileTranscriptionFallbackModel,
+                        operationID: operationID,
+                        audioSessionID: audioSessionID,
+                        startMs: startMs,
+                        isOnboardingDemo: isOnboardingDemo,
                         completion: completion
                     )
                     return
@@ -84,7 +136,15 @@ class TranscriptionService {
         return false
     }
     
-    private func transcribeWithOpenAI(audioURL: URL, model: String, completion: @escaping (String?, Error?) -> Void) {
+    private func transcribeWithOpenAI(
+        audioURL: URL,
+        model: String,
+        operationID: String,
+        audioSessionID: String,
+        startMs: Int,
+        isOnboardingDemo: Bool,
+        completion: @escaping (String?, Error?) -> Void
+    ) {
         // Check if the Worker URL is configured.
         guard OpenAIConfiguration.isConfigured else {
             completion(nil, TranscriptionError.apiKeyNotConfigured)
@@ -131,25 +191,48 @@ class TranscriptionService {
 
         request.httpBody = body
 
-        let task = URLSession.shared.dataTask(with: request) { data, response, error in
-            if let error = error {
-                completion(nil, error)
-                return
-            }
+        request.setValue(operationID, forHTTPHeaderField: "X-Usage-Operation-ID")
+        request.setValue("transcription", forHTTPHeaderField: "X-Usage-Operation-Type")
+        request.setValue(audioSessionID, forHTTPHeaderField: "X-Audio-Session-ID")
+        request.setValue(String(startMs), forHTTPHeaderField: "X-Audio-Start-MS")
+
+        Task {
+            do {
+                var authorizedRequest = request
+                authorizedRequest.setValue(
+                    try await UsageAccessManager.shared.authorizationHeader(forOnboardingDemo: isOnboardingDemo),
+                    forHTTPHeaderField: "Authorization"
+                )
+                let (data, response) = try await URLSession.shared.data(for: authorizedRequest)
             
             if let httpResponse = response as? HTTPURLResponse {
                 if httpResponse.statusCode == 429 {
                     completion(nil, TranscriptionError.rateLimited)
                     return
-                } else if httpResponse.statusCode >= 500 {
-                    completion(nil, TranscriptionError.serverError)
-                    return
                 } else if httpResponse.statusCode >= 400 {
+                    if httpResponse.statusCode == 402 {
+                        completion(nil, UsageAccessError.trialExhausted)
+                        return
+                    }
+                    if httpResponse.statusCode == 403 {
+                        completion(nil, UsageAccessError.noVerifiedSubscription)
+                        return
+                    }
+                    if httpResponse.statusCode == 426 {
+                        completion(nil, UsageAccessError.updateRequired)
+                        return
+                    }
+                    if httpResponse.statusCode == 409 || httpResponse.statusCode == 503 {
+                        completion(nil, UsageAccessError.verificationPending)
+                        return
+                    }
+                    if httpResponse.statusCode >= 500 {
+                        completion(nil, TranscriptionError.serverError)
+                        return
+                    }
                     // Try to parse error message from body
-                    if let data = data,
-                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                       let err = json["error"] as? [String: Any],
-                       let message = err["message"] as? String {
+                    if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                       let message = json["error"] as? String {
                         completion(nil, NSError(domain: "TranscriptionService", code: httpResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: message]))
                         return
                     } else {
@@ -159,11 +242,6 @@ class TranscriptionService {
                 }
             }
             
-            guard let data = data else {
-                completion(nil, TranscriptionError.invalidResponse)
-                return
-            }
-
             if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                let text = json["text"] as? String {
                 completion(text, nil)
@@ -176,16 +254,18 @@ class TranscriptionService {
             }
 
             completion(text, nil)
+            } catch {
+                completion(nil, error)
+            }
         }
-        task.resume()
     }
 
-    func diarize(audioURL: URL, completion: @escaping (Result<DiarizationResult, Error>) -> Void) {
+    func diarize(audioURL: URL, audioSessionID: String? = nil, completion: @escaping (Result<DiarizationResult, Error>) -> Void) {
         guard OpenAIConfiguration.isConfigured else {
             completion(.failure(TranscriptionError.apiKeyNotConfigured))
             return
         }
-        diarizeWithRetry(audioURL: audioURL, retryCount: 0, completion: completion)
+        diarizeWithRetry(audioURL: audioURL, retryCount: 0, operationID: UUID().uuidString, audioSessionID: audioSessionID ?? UUID().uuidString, completion: completion)
     }
 
     static func parseDiarizedJSON(_ data: Data) throws -> DiarizationResult {
@@ -196,8 +276,8 @@ class TranscriptionService {
         SpeakerDiarizationParser.mergeAdjacentTurns(turns, gap: gap)
     }
 
-    private func diarizeWithRetry(audioURL: URL, retryCount: Int, completion: @escaping (Result<DiarizationResult, Error>) -> Void) {
-        diarizeWithOpenAI(audioURL: audioURL) { [weak self] result in
+    private func diarizeWithRetry(audioURL: URL, retryCount: Int, operationID: String, audioSessionID: String, completion: @escaping (Result<DiarizationResult, Error>) -> Void) {
+        diarizeWithOpenAI(audioURL: audioURL, operationID: operationID, audioSessionID: audioSessionID) { [weak self] result in
             guard let self else { return }
 
             if case .failure(let error) = result, self.isRetryable(error), retryCount < self.maxRetries {
@@ -205,7 +285,7 @@ class TranscriptionService {
                 let jitter = Double.random(in: 0...0.5)
                 let delay = min(30.0, base + jitter)
                 DispatchQueue.global().asyncAfter(deadline: .now() + delay) {
-                    self.diarizeWithRetry(audioURL: audioURL, retryCount: retryCount + 1, completion: completion)
+                    self.diarizeWithRetry(audioURL: audioURL, retryCount: retryCount + 1, operationID: operationID, audioSessionID: audioSessionID, completion: completion)
                 }
                 return
             }
@@ -214,7 +294,7 @@ class TranscriptionService {
         }
     }
 
-    private func diarizeWithOpenAI(audioURL: URL, completion: @escaping (Result<DiarizationResult, Error>) -> Void) {
+    private func diarizeWithOpenAI(audioURL: URL, operationID: String, audioSessionID: String, completion: @escaping (Result<DiarizationResult, Error>) -> Void) {
         guard OpenAIConfiguration.isConfigured else {
             completion(.failure(TranscriptionError.apiKeyNotConfigured))
             return
@@ -255,44 +335,31 @@ class TranscriptionService {
 
         body.append("--\(boundary)--\r\n")
         request.httpBody = body
+        request.setValue(operationID, forHTTPHeaderField: "X-Usage-Operation-ID")
+        request.setValue("diarization", forHTTPHeaderField: "X-Usage-Operation-Type")
+        request.setValue(audioSessionID, forHTTPHeaderField: "X-Audio-Session-ID")
+        request.setValue("0", forHTTPHeaderField: "X-Audio-Start-MS")
 
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 120
         config.timeoutIntervalForResource = 300
         let session = URLSession(configuration: config)
 
-        let task = session.dataTask(with: request) { data, response, error in
-            if let error {
-                completion(.failure(error))
-                return
-            }
-
-            if let httpResponse = response as? HTTPURLResponse {
-                if httpResponse.statusCode == 429 {
-                    completion(.failure(TranscriptionError.rateLimited))
-                    return
-                } else if httpResponse.statusCode >= 500 {
-                    completion(.failure(TranscriptionError.serverError))
-                    return
-                } else if httpResponse.statusCode >= 400 {
-                    if let data,
-                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                       let err = json["error"] as? [String: Any],
-                       let message = err["message"] as? String {
-                        completion(.failure(NSError(domain: "TranscriptionService", code: httpResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: message])))
-                        return
-                    }
+        Task {
+            do {
+                var authorizedRequest = request
+                authorizedRequest.setValue(try await UsageAccessManager.shared.authorizationHeader(), forHTTPHeaderField: "Authorization")
+                let (data, response) = try await session.data(for: authorizedRequest)
+                if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode >= 400 {
+                    if httpResponse.statusCode == 402 { completion(.failure(UsageAccessError.trialExhausted)); return }
+                    if httpResponse.statusCode == 403 { completion(.failure(UsageAccessError.noVerifiedSubscription)); return }
+                    if httpResponse.statusCode == 426 { completion(.failure(UsageAccessError.updateRequired)); return }
+                    if httpResponse.statusCode == 409 || httpResponse.statusCode == 503 { completion(.failure(UsageAccessError.verificationPending)); return }
+                    if httpResponse.statusCode == 429 { completion(.failure(TranscriptionError.rateLimited)); return }
+                    if httpResponse.statusCode >= 500 { completion(.failure(TranscriptionError.serverError)); return }
                     completion(.failure(TranscriptionError.invalidResponse))
                     return
                 }
-            }
-
-            guard let data else {
-                completion(.failure(TranscriptionError.invalidResponse))
-                return
-            }
-
-            do {
                 let parsed = try Self.parseDiarizedJSON(data)
                 let merged = Self.mergeAdjacentTurns(parsed.turns)
                 completion(.success(DiarizationResult(duration: parsed.duration, text: parsed.text, turns: merged)))
@@ -300,7 +367,6 @@ class TranscriptionService {
                 completion(.failure(error))
             }
         }
-        task.resume()
     }
 }
 

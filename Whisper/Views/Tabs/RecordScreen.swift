@@ -4,8 +4,11 @@ import SwiftData
 struct RecordScreen: View {
     @Environment(\.modelContext) private var modelContext
 	@Environment(\.colorScheme) private var colorScheme
+	@Environment(\.openURL) private var openURL
     @ObservedObject var viewModel: RecordingViewModel
+    @ObservedObject private var usageAccess = UsageAccessManager.shared
     @State private var docked = false
+    @State private var showUnlimitedPaywall = false
     @State private var playingSegmentId: UUID? = nil
     @State private var focusedSpeakerKey: String? = nil
     @State private var followLiveTranscript = true
@@ -52,6 +55,7 @@ struct RecordScreen: View {
         }
 		.onAppear {
 			viewModel.checkNetworkStatus()
+			Task { await usageAccess.refresh(force: true) }
 			AnalyticsService.shared.trackEvent("Record Screen Viewed", properties: [
 				"is_online": viewModel.isOnline
 			])
@@ -105,10 +109,77 @@ struct RecordScreen: View {
 			// Keep chip above the mic when docked
 			.padding(.bottom, docked ? 140 : 24)
 		}
+		.task {
+			while !Task.isCancelled {
+				try? await Task.sleep(nanoseconds: 15_000_000_000)
+				guard !Task.isCancelled else { break }
+				await usageAccess.refreshUsageSnapshot()
+			}
+		}
+		.alert("5 trial minutes left", isPresented: Binding(
+			get: { usageAccess.shouldShowFiveMinuteWarning },
+			set: { if !$0 { usageAccess.markFiveMinuteWarningPresented() } }
+		)) {
+			Button("Continue recording", role: .cancel) { usageAccess.markFiveMinuteWarningPresented() }
+		} message: {
+			Text("Your 3-day trial includes 30 transcription minutes total. Recording can continue locally when transcription minutes run out.")
+		}
+		.sheet(isPresented: $showUnlimitedPaywall, onDismiss: {
+			Task {
+				await usageAccess.refresh(force: true)
+				if usageAccess.snapshot?.state == "paid" {
+                    viewModel.retryUsageLockedTranscriptionsWhenAccessIsAvailable()
+				}
+			}
+		}) {
+			PayWallView(displayCloseButton: true, source: .trialExhausted, offeringIdentifier: "annualUnlimited")
+		}
     }
     
     @ViewBuilder
     private var headerBanners: some View {
+        if let usage = usageAccess.snapshot, usage.state == "trial", let remainingMinutes = usage.remainingMinutes, remainingMinutes > 5 {
+            BannerView(icon: "clock", title: "\(remainingMinutes) trial minutes remaining", subtitle: "30 transcription minutes total", color: .blue)
+        }
+        if viewModel.isTrialUsageExhausted || usageAccess.snapshot?.remainingMs == 0 || viewModel.hasUsageLockedTranscriptions {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(usageAccess.snapshot?.state == "paid"
+                     ? "Unlimited transcription is active."
+                     : (viewModel.isTrialUsageExhausted || usageAccess.snapshot?.remainingMs == 0
+                        ? "You’ve used your 30 trial minutes."
+                        : "Your saved audio is waiting for subscription verification."))
+                    .font(.app(.semibold, size: 15))
+                Text(usageAccess.snapshot?.state == "paid"
+                     ? "Your saved audio is ready to transcribe."
+                     : (viewModel.isTrialUsageExhausted || usageAccess.snapshot?.remainingMs == 0
+                        ? "Start unlimited transcription now, or keep recording audio. Your saved audio stays on this device."
+                        : "Keep recording on this device and retry when subscription access is verified."))
+                    .font(.app(.regular, size: 14))
+                    .foregroundStyle(.secondary)
+                if UsageAccessManager.immediateUnlimitedPurchaseEnabled {
+                    Button("Start unlimited now") { showUnlimitedPaywall = true }
+                        .buttonStyle(.borderedProminent)
+                }
+                if usageAccess.snapshot?.state == "paid", viewModel.hasUsageLockedTranscriptions {
+                    Button("Transcribe saved audio") { viewModel.retryUsageLockedTranscriptionsWhenAccessIsAvailable() }
+                        .buttonStyle(.borderedProminent)
+                }
+                if viewModel.hasUsageLockedTranscriptions,
+                   !viewModel.isTrialUsageExhausted,
+                   usageAccess.snapshot?.state != "paid",
+                   usageAccess.snapshot?.remainingMs != 0 {
+                    Button("Retry subscription verification") { viewModel.retryUsageLockedTranscriptionsWhenAccessIsAvailable() }
+                        .buttonStyle(.bordered)
+                }
+                Button("Manage subscription") {
+                    if let url = URL(string: "https://apps.apple.com/account/subscriptions") { openURL(url) }
+                }
+                .font(.app(.medium, size: 13))
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 14))
+        }
         if let error = viewModel.errorMessage, !error.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             ErrorCapsuleView(text: error)
         }
@@ -421,6 +492,7 @@ struct RecordScreen: View {
     private func statusText(for segment: TranscriptionSegment) -> String {
         switch segment.status {
         case "pending", "processing": return "Processing…"
+        case "locked": return "Saved audio · waiting for subscription"
         case "failed": return "Failed to transcribe"
         case "queued": return "Queued (offline)"
         default: return ""

@@ -38,7 +38,7 @@ public class SummaryService {
     }
     
     // MARK: - Translation
-    public static func translate(text: String, to targetCode: String) async -> String {
+    public static func translate(text: String, to targetCode: String, isOnboardingDemo: Bool = false) async -> String {
         guard !text.isEmpty else { return "" }
         // If the Worker is not configured or this is a no-op, return original text.
         guard OpenAIConfiguration.isConfigured,
@@ -71,7 +71,7 @@ public class SummaryService {
             config.timeoutIntervalForResource = 60.0
             let session = URLSession(configuration: config)
             
-            let (data, response) = try await session.data(for: request)
+            let (data, response) = try await session.data(for: await shared.authorizedRequest(request, isOnboardingDemo: isOnboardingDemo))
             guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
                 return text
             }
@@ -186,11 +186,11 @@ public class SummaryService {
         }.joined(separator: "\n\n")
     }
     
-    public static func generateSummary(for transcript: String) async -> (summary: String, todos: [String]) {
+    public static func generateSummary(for transcript: String, isOnboardingDemo: Bool = false) async -> (summary: String, todos: [String]) {
         // Use OpenAI API if key is configured
         if OpenAIConfiguration.isConfigured && !transcript.isEmpty {
             do {
-                let (summary, todos) = try await shared.summarizeWithOpenAI(transcript: transcript)
+                let (summary, todos) = try await shared.summarizeWithOpenAI(transcript: transcript, isOnboardingDemo: isOnboardingDemo)
                 return (summary, todos)
             } catch {
                 print("SummaryService: OpenAI API failed, error: \(error)")
@@ -202,11 +202,11 @@ public class SummaryService {
         return (summary, todos)
     }
     
-    public static func generateShortSummary(for transcript: String) async -> (summary: String, todos: [String]) {
+    public static func generateShortSummary(for transcript: String, isOnboardingDemo: Bool = false) async -> (summary: String, todos: [String]) {
         // Use OpenAI API if key is configured
         if OpenAIConfiguration.isConfigured && !transcript.isEmpty {
             do {
-                let summary = try await shared.summarizeShortWithOpenAI(transcript: transcript)
+                let summary = try await shared.summarizeShortWithOpenAI(transcript: transcript, isOnboardingDemo: isOnboardingDemo)
                 return (summary, [])
             } catch {
                 print("SummaryService: OpenAI API failed, error: \(error)")
@@ -220,7 +220,8 @@ public class SummaryService {
     static func continueTranscriptConversation(
         transcript: String,
         history: [TranscriptConversationMessage],
-        message: String
+        message: String,
+        isOnboardingDemo: Bool = false
     ) async throws -> String {
         let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "" }
@@ -230,21 +231,24 @@ public class SummaryService {
         return try await shared.continueTranscriptConversationWithOpenAI(
             transcript: transcript,
             history: history,
-            message: trimmed
+            message: trimmed,
+            isOnboardingDemo: isOnboardingDemo
         )
     }
 
     static func suggestedConversationPrompts(
         transcript: String,
         history: [TranscriptConversationMessage],
-        limit: Int = 3
+        limit: Int = 3,
+        isOnboardingDemo: Bool = false
     ) async -> [String] {
         guard OpenAIConfiguration.isConfigured, !transcript.isEmpty else { return [] }
         do {
             return try await shared.suggestedConversationPromptsWithOpenAI(
                 transcript: transcript,
                 history: history,
-                limit: limit
+                limit: limit,
+                isOnboardingDemo: isOnboardingDemo
             )
         } catch {
             return []
@@ -252,19 +256,19 @@ public class SummaryService {
     }
     
     // MARK: - Keywords
-    public static func extractKeywords(for transcript: String, maxKeywords: Int = 8) async -> [String] {
+    public static func extractKeywords(for transcript: String, maxKeywords: Int = 8, isOnboardingDemo: Bool = false) async -> [String] {
         guard OpenAIConfiguration.isConfigured, !transcript.isEmpty else {
             return []
         }
         do {
-            return try await shared.extractKeywordsWithOpenAI(transcript: transcript, maxKeywords: maxKeywords)
+            return try await shared.extractKeywordsWithOpenAI(transcript: transcript, maxKeywords: maxKeywords, isOnboardingDemo: isOnboardingDemo)
         } catch {
             print("SummaryService: Keyword extraction failed, error: \(error)")
             return []
         }
     }
     
-    private func summarizeWithOpenAI(transcript: String) async throws -> (String, [String]) {
+    private func summarizeWithOpenAI(transcript: String, isOnboardingDemo: Bool) async throws -> (String, [String]) {
         // Limit transcript length to prevent oversized payloads (QUIC packet size issues)
         let maxTranscriptLength = 4000 // ~1000 tokens
         let truncatedTranscript = transcript.count > maxTranscriptLength 
@@ -297,7 +301,7 @@ public class SummaryService {
         config.timeoutIntervalForResource = 60.0
         let session = URLSession(configuration: config)
         
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await session.data(for: await authorizedRequest(request, isOnboardingDemo: isOnboardingDemo))
         
         guard let httpResponse = response as? HTTPURLResponse else {
             print("❌ SummaryService: No HTTP response received")
@@ -348,7 +352,7 @@ public class SummaryService {
         }
     }
     
-    private func summarizeShortWithOpenAI(transcript: String) async throws -> String {
+    private func summarizeShortWithOpenAI(transcript: String, isOnboardingDemo: Bool) async throws -> String {
         // Limit transcript length to prevent oversized payloads
         let maxTranscriptLength = 2000 // For short summaries, we need less context
         let truncatedTranscript = transcript.count > maxTranscriptLength 
@@ -378,7 +382,7 @@ public class SummaryService {
         config.timeoutIntervalForResource = 60.0
         let session = URLSession(configuration: config)
         
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await session.data(for: await authorizedRequest(request, isOnboardingDemo: isOnboardingDemo))
         
         guard let httpResponse = response as? HTTPURLResponse else {
             print("❌ SummaryService (Short): No HTTP response received")
@@ -424,6 +428,15 @@ public class SummaryService {
         let seconds = Int(duration) % 60
         return String(format: "%02d:%02d", minutes, seconds)
     }
+
+    private func authorizedRequest(_ request: URLRequest, isOnboardingDemo: Bool = false) async throws -> URLRequest {
+        var authorized = request
+        authorized.setValue(
+            try await UsageAccessManager.shared.authorizationHeader(forOnboardingDemo: isOnboardingDemo),
+            forHTTPHeaderField: "Authorization"
+        )
+        return authorized
+    }
 }
 
 // MARK: - Private OpenAI helpers
@@ -431,7 +444,8 @@ private extension SummaryService {
     func continueTranscriptConversationWithOpenAI(
         transcript: String,
         history: [TranscriptConversationMessage],
-        message: String
+        message: String,
+        isOnboardingDemo: Bool
     ) async throws -> String {
         let maxTranscriptLength = 6000
         let truncatedTranscript = transcript.count > maxTranscriptLength
@@ -458,14 +472,16 @@ private extension SummaryService {
             messages: messages,
             temperature: 0.3,
             maxTokens: 700,
-            errorLabel: "Transcript conversation"
+            errorLabel: "Transcript conversation",
+            isOnboardingDemo: isOnboardingDemo
         )
     }
 
     func suggestedConversationPromptsWithOpenAI(
         transcript: String,
         history: [TranscriptConversationMessage],
-        limit: Int
+        limit: Int,
+        isOnboardingDemo: Bool
     ) async throws -> [String] {
         let maxTranscriptLength = 5000
         let truncatedTranscript = transcript.count > maxTranscriptLength
@@ -494,7 +510,8 @@ private extension SummaryService {
             temperature: 0.45,
             maxTokens: 180,
             responseFormatJSON: true,
-            errorLabel: "Prompt suggestions"
+            errorLabel: "Prompt suggestions",
+            isOnboardingDemo: isOnboardingDemo
         )
 
         struct SuggestionResponse: Decodable { let suggestions: [String] }
@@ -517,7 +534,8 @@ private extension SummaryService {
         temperature: Double,
         maxTokens: Int,
         responseFormatJSON: Bool = false,
-        errorLabel: String
+        errorLabel: String,
+        isOnboardingDemo: Bool = false
     ) async throws -> String {
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
@@ -538,7 +556,7 @@ private extension SummaryService {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 30.0
         config.timeoutIntervalForResource = 60.0
-        let (data, response) = try await URLSession(configuration: config).data(for: request)
+        let (data, response) = try await URLSession(configuration: config).data(for: await authorizedRequest(request, isOnboardingDemo: isOnboardingDemo))
         guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
             let responseBody = String(data: data, encoding: .utf8) ?? "Unable to decode response"
             throw NSError(
@@ -559,7 +577,7 @@ private extension SummaryService {
         return decoded.choices.first?.message.content
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
-    func extractKeywordsWithOpenAI(transcript: String, maxKeywords: Int) async throws -> [String] {
+    func extractKeywordsWithOpenAI(transcript: String, maxKeywords: Int, isOnboardingDemo: Bool) async throws -> [String] {
         let maxTranscriptLength = 4000
         let truncatedTranscript = transcript.count > maxTranscriptLength
             ? String(transcript.prefix(maxTranscriptLength)) + "..."
@@ -589,7 +607,7 @@ private extension SummaryService {
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         
         let session = URLSession(configuration: .default)
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await session.data(for: await authorizedRequest(request, isOnboardingDemo: isOnboardingDemo))
         guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
             let responseBody = String(data: data, encoding: .utf8) ?? "Unable to decode response"
             throw NSError(domain: "SummaryService", code: 3, userInfo: [NSLocalizedDescriptionKey: "Keyword API error: \(responseBody)"])

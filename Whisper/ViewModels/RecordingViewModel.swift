@@ -55,6 +55,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     @Published var liveTranscriptWords: [String] = []
     @Published var realtimeStatusText: String? = nil
     @Published var isRealtimeConnected = false
+    @Published private(set) var isTrialUsageExhausted = false
     @Published var isRealtimeFallbackActive = false
     @Published var hidesSegmentRowsDuringRealtime = false
     @Published private(set) var preRecordingTranscriptionModeOverride: TranscriptionMode? = nil
@@ -72,6 +73,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     private var modelContext: ModelContext
     private var transcriptionService: TranscriptionService
     private var realtimeTranscriptionService: RealtimeTranscriptionService
+    private var activeAudioSessionID = UUID().uuidString
     private let settingsStore = SettingsStore()
     private var activeTranscriptionMode: TranscriptionMode = .segments20s
     private var realtimeTranscriptAccumulator = RealtimeTranscriptAccumulator()
@@ -91,6 +93,33 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     @Published private(set) var activeRecording: Recording? = nil
     // Effective translation language for this session (captured at start)
     private(set) var activeTargetTranslationLanguage: String? = nil
+
+    var hasUsageLockedTranscriptions: Bool {
+        recordings.contains { recording in recording.segments.contains { $0.status == "locked" } }
+    }
+
+    func retryUsageLockedTranscriptionsWhenAccessIsAvailable() {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await UsageAccessManager.shared.refresh(force: true)
+            guard let access = UsageAccessManager.shared.snapshot,
+                  access.state == "paid" || (access.state == "trial" && (access.remainingMs ?? 0) > 0) else { return }
+            if access.state == "paid" { self.isTrialUsageExhausted = false }
+            self.clearErrorMessage()
+            let segments = self.recordings.flatMap(\.segments).filter { $0.status == "locked" }
+            for segment in segments {
+                guard let recording = segment.recording else { continue }
+                let url = URL(fileURLWithPath: segment.filePath)
+                guard FileManager.default.fileExists(atPath: url.path) else { continue }
+                self.startFileTranscription(
+                    url: url,
+                    duration: max(recording.duration, 0.1),
+                    startTime: segment.timestamp,
+                    recording: recording
+                )
+            }
+        }
+    }
 
     private func setErrorMessage(_ message: String) {
         errorMessage = message
@@ -198,6 +227,16 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
             if isWaitingForRealtimeFlush {
                 scheduleRealtimeFlushDebounce()
             }
+        case .usageExhausted:
+            isRealtimeConnected = false
+            isTrialUsageExhausted = true
+            isRealtimeFallbackActive = false
+            hidesSegmentRowsDuringRealtime = false
+            realtimeStatusText = "Your 30 trial minutes are used. Audio is still being saved locally."
+            setErrorMessage(UsageAccessError.trialExhausted.localizedDescription)
+            AnalyticsService.shared.trackEvent("Trial Transcription Minutes Exhausted", properties: [
+                "audio_session_id": activeAudioSessionID
+            ])
         case .failed(let message):
             isRealtimeConnected = false
             isRealtimeFallbackActive = true
@@ -386,6 +425,8 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         isWaitingForRealtimeFlush = false
         isFinishingRealtime = false
         inFlightSegmentTranscriptions.removeAll()
+        activeAudioSessionID = UUID().uuidString
+        isTrialUsageExhausted = false
 
         let requestedMode = preRecordingTranscriptionMode
         let canUseRealtime = requestedMode == .realtimeOpenAI && isOnline && realtimeTranscriptionService.isConfigured
@@ -410,7 +451,10 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         isPreparingRealtime = true
         isWaitingToStartAfterRealtime = true
         realtimeStatusText = nil
-        realtimeTranscriptionService.connect(languages: transcriptionLanguageHints())
+        realtimeTranscriptionService.connect(
+            languages: transcriptionLanguageHints(),
+            audioSessionID: activeAudioSessionID
+        )
         scheduleRealtimePrepareTimeout()
     }
 
@@ -428,6 +472,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                     self.activeTargetTranslationLanguage = Languages.translationTarget(from: effective)
                     // Create a new Recording for this session
                     let rec = Recording(
+                        id: UUID(uuidString: self.activeAudioSessionID) ?? UUID(),
                         duration: 0,
                         filePath: filePath ?? UUID().uuidString,
                         title: nil,
@@ -611,6 +656,12 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     private func transcribeRealtimeRecordingIfNeeded(_ recording: Recording) {
         let url = URL(fileURLWithPath: recording.filePath)
         let fileSize = (try? FileManager.default.attributesOfItem(atPath: recording.filePath)[.size] as? NSNumber)?.intValue ?? 0
+
+        if !recording.fullTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            realtimeStatusText = nil
+            attemptAutoSummarizeIfComplete(for: recording)
+            return
+        }
         
         guard FileManager.default.fileExists(atPath: recording.filePath), fileSize > 1000 else {
             realtimeStatusText = nil
@@ -784,7 +835,10 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     }
 
     private func startFileTranscription(url: URL, duration: TimeInterval, startTime: TimeInterval, recording rec: Recording) {
-        let existing = segments(for: rec).first { $0.filePath == url.path }
+        let matchingSegments = segments(for: rec).filter { $0.filePath == url.path }
+        let existing = matchingSegments.first { $0.status == "locked" }
+            ?? matchingSegments.first { $0.status == "processing" || $0.status == "queued" }
+            ?? matchingSegments.first
         let segment: TranscriptionSegment
         if let existing {
             segment = existing
@@ -815,7 +869,12 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
             "segment_start_time": startTime,
             "is_online": true
         ])
-        transcriptionService.transcribe(audioURL: url, segmentStart: startTime, duration: duration) { [weak self] text, error in
+        transcriptionService.transcribe(
+            audioURL: url,
+            segmentStart: startTime,
+            duration: duration,
+            audioSessionID: rec.id.uuidString
+        ) { [weak self] text, error in
             DispatchQueue.main.async {
                 self?.inFlightSegmentTranscriptions.remove(segment.id)
                 self?.applyTranscriptionResult(segment: segment, recording: rec, duration: duration, text: text, error: error)
@@ -836,7 +895,32 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
 
         if let error {
             let existingText = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !existingText.isEmpty {
+            if let accessError = error as? UsageAccessError {
+                if !existingText.isEmpty {
+                    segment.status = "completed"
+                    if !segments(for: rec).contains(where: { $0.status == "locked" && $0.filePath == segment.filePath }) {
+                        let unprocessed = TranscriptionSegment(
+                            text: "",
+                            status: "locked",
+                            timestamp: segment.timestamp,
+                            filePath: segment.filePath,
+                            recording: rec
+                        )
+                        modelContext.insert(unprocessed)
+                    }
+                } else {
+                    segment.status = "locked"
+                    segment.text = ""
+                }
+                if case .trialExhausted = accessError {
+                    isTrialUsageExhausted = true
+                }
+                setErrorMessage(accessError.localizedDescription)
+                AnalyticsService.shared.trackEvent("Saved Transcription Held For Subscription", properties: [
+                    "segment_duration": duration,
+                    "segment_start_time": segment.timestamp
+                ])
+            } else if !existingText.isEmpty {
                 segment.status = "completed"
                 assignTitleIfNeeded(to: rec, from: existingText)
                 AnalyticsService.shared.trackEvent("Transcription Failed", properties: [
@@ -932,14 +1016,25 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                     transcriptionService.transcribe(
                         audioURL: audioURL,
                         segmentStart: segment.timestamp,
-                        duration: 30.0
+                        duration: 30.0,
+                        audioSessionID: segment.recording?.id.uuidString
                     ) { [weak self] text, error in
                         DispatchQueue.main.async {
                             self?.inFlightSegmentTranscriptions.remove(segment.id)
                             if let error = error {
-                                segment.status = "failed"
+                                if let accessError = error as? UsageAccessError {
+                                    segment.status = "locked"
+                                    if case .trialExhausted = accessError {
+                                        self?.isTrialUsageExhausted = true
+                                    }
+                                    self?.setErrorMessage(accessError.localizedDescription)
+                                } else {
+                                    segment.status = "failed"
+                                }
                                 segment.text = ""
-                                self?.setErrorMessage("Transcription failed: \(error.localizedDescription)")
+                                if !(error is UsageAccessError) {
+                                    self?.setErrorMessage("Transcription failed: \(error.localizedDescription)")
+                                }
                             } else if let text = text {
                                 self?.clearErrorMessage()
                                 if let target = Languages.translationTarget(from: self?.sessionTranslationLanguage ?? Languages.autoCode) {
@@ -1143,7 +1238,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
             backgroundTask = .invalid
         }
 
-        transcriptionService.diarize(audioURL: sessionURL) { [weak self] result in
+        transcriptionService.diarize(audioURL: sessionURL, audioSessionID: recording.id.uuidString) { [weak self] result in
             DispatchQueue.main.async {
                 self?.applyDiarizationResult(
                     result,

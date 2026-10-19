@@ -22,9 +22,26 @@ The deploy command prints the Worker URL. Put that URL in `Whisper/Services/Real
 - `POST /v1/audio/transcriptions`
 - `POST /v1/chat/completions`
 - `GET /v1/realtime` with a WebSocket upgrade
+- `POST /usage/session` and `GET /usage/state` for verified subscriber access and usage
+- `POST /usage/demo-session` for the restricted onboarding preview
 - `POST /revenuecat/webhook` for authenticated RevenueCat events
 
 The Worker intentionally does not provide a general-purpose OpenAI proxy. It strips any client-supplied `Authorization` header and only forwards the allowlisted routes.
+
+## Trial usage enforcement
+
+Cloudflare SQLite Durable Objects keep one usage ledger per verified Apple original transaction ID. The trial allowance is 1,800 seconds total; currently paid subscriptions have no cap. The onboarding preview has a separate 15-second limit. File duration is measured from validated mono PCM WAV data, and live audio is metered as it passes through the Worker.
+
+Before issuing an access token, the Worker validates the StoreKit transaction JWS with Apple's App Store Server Library and checks the matching active `WhisperNote Pro` entitlement and store transaction through RevenueCat's subscriber API. The RevenueCat app-user ID is only a lookup key; it cannot grant access without the matching signed Apple transaction.
+
+Access enforcement requires two additional Worker secrets:
+
+- `USAGE_SESSION_SECRET`: a random high-entropy signing key for short-lived Worker access tokens.
+- `REVENUECAT_SECRET_API_KEY`: a RevenueCat secret API key, stored only in Cloudflare, for read-only subscriber verification.
+
+Set them with `npx wrangler secret put USAGE_SESSION_SECRET` and `npx wrangler secret put REVENUECAT_SECRET_API_KEY`. Never add their values to this repository or paste them into chat. Do not activate this Worker before the updated iOS app is ready; older app versions must update before cloud transcription can continue.
+
+The current iOS build enables the in-app “Start unlimited now” route. Before public release, verify on a physical iPhone in sandbox that billing starts immediately, paid access activates, renewal is correct, and the original trial does not cause an extra charge.
 
 ## RevenueCat trial attribution setup
 

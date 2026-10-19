@@ -546,6 +546,7 @@ struct TranscriptDetailView: View {
     private func statusText(for segment: TranscriptionSegment) -> String {
         switch segment.status {
         case "pending", "processing": return "Processing…"
+        case "locked": return "Saved audio · waiting for subscription"
         case "failed": return "Failed to transcribe"
         case "queued": return "Queued (offline)"
         default: return ""

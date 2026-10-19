@@ -14,6 +14,7 @@ enum PaywallSource: String {
     case onboardingControl = "onboarding_control"
     case onboardingRealtimeDemo = "onboarding_realtime_demo"
     case mainApp = "main_app"
+    case trialExhausted = "trial_exhausted"
 }
 
 struct PayWallView: View {
@@ -25,21 +26,41 @@ struct PayWallView: View {
     @State private var activePackageProperties: [String: Any] = [:]
     @State private var analyticsSource: PaywallSource
     @State private var analyticsDemoOutcome: String
+    @State private var offeringIdentifier: String?
+    @State private var selectedOffering: Offering?
 
     init(
         displayCloseButton: Bool = false,
         source: PaywallSource = .mainApp,
         demoOutcome: String = "not_applicable",
+        offeringIdentifier: String? = nil,
         onImpressionTracked: @escaping () -> Void = {}
     ) {
         self.displayCloseButton = displayCloseButton
         self.onImpressionTracked = onImpressionTracked
         _analyticsSource = State(initialValue: source)
         _analyticsDemoOutcome = State(initialValue: demoOutcome)
+        _offeringIdentifier = State(initialValue: offeringIdentifier)
     }
     
     var body: some View {
-        PaywallView(displayCloseButton: displayCloseButton)
+        Group {
+            if let selectedOffering {
+                RevenueCatUI.PaywallView(offering: selectedOffering, displayCloseButton: displayCloseButton)
+            } else if offeringIdentifier != nil {
+                VStack(spacing: 16) {
+                    ProgressView()
+                    Text("Loading unlimited subscription…")
+                        .font(.app(.medium, size: 16))
+                    Button("Try again") {
+                        Task { await loadSelectedOffering() }
+                    }
+                }
+                .task { await loadSelectedOffering() }
+            } else {
+                RevenueCatUI.PaywallView(displayCloseButton: displayCloseButton)
+            }
+        }
             .onPurchaseStarted { package in
                 activePackageProperties = packageProperties(package)
                 track("Paywall Purchase Started", properties: activePackageProperties)
@@ -56,6 +77,8 @@ struct PayWallView: View {
                 }
                 track("Paywall Purchase Completed", properties: properties)
                 PaywallManager.shared.recordCompletedPaywallPurchase(customerInfo: customerInfo)
+                UsageAccessManager.shared.invalidateSession()
+                Task { await UsageAccessManager.shared.refresh(force: true) }
             }
             .onPurchaseCancelled {
                 track("Paywall Purchase Cancelled", properties: activePackageProperties)
@@ -87,6 +110,18 @@ struct PayWallView: View {
                 track("Paywall Shown", properties: ["display_close_button": displayCloseButton])
                 onImpressionTracked()
             }
+            .task(id: offeringIdentifier) { await loadSelectedOffering() }
+    }
+
+    @MainActor
+    private func loadSelectedOffering() async {
+        guard let offeringIdentifier else { return }
+        do {
+            let offerings = try await Purchases.shared.offerings()
+            selectedOffering = offerings.all[offeringIdentifier]
+        } catch {
+            selectedOffering = nil
+        }
     }
 
     private func packageProperties(_ package: Package) -> [String: Any] {

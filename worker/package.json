@@ -12,5 +12,8 @@
     "@cloudflare/workers-types": "latest",
     "typescript": "latest",
     "wrangler": "latest"
+  },
+  "dependencies": {
+    "@apple/app-store-server-library": "^3.1.0"
   }
 }

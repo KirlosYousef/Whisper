@@ -7,6 +7,8 @@
 
 import Foundation
 import RevenueCat
+import Security
+import StoreKit
 
 enum ObservedTrialConversionAction: Equatable {
     case observeTrial
@@ -214,5 +216,196 @@ extension PaywallManager: PurchasesDelegate {
         Task { @MainActor in
             apply(customerInfo)
         }
+    }
+}
+
+enum UsageAccessError: LocalizedError {
+    case noVerifiedSubscription
+    case trialExhausted
+    case updateRequired
+    case verificationPending
+
+    var errorDescription: String? {
+        switch self {
+        case .noVerifiedSubscription: "An active App Store subscription could not be verified. Reopen Revera while online and try again."
+        case .trialExhausted: "You’ve used your 30 trial minutes. Start unlimited transcription now, or keep recording audio."
+        case .updateRequired: "Update Revera to continue cloud transcription. Your saved recordings are still available."
+        case .verificationPending: "Your purchase is still being verified. Keep your recording and try again shortly."
+        }
+    }
+}
+
+struct UsageAccessSnapshot: Decodable {
+    let state: String
+    let active: Bool?
+    let paid: Bool?
+    let demo: Bool?
+    let expiresAt: Double?
+    let allowanceMs: Int?
+    let consumedMs: Int
+    let reservedMs: Int
+    let remainingMs: Int?
+    let paidPeriodStartAt: Double?
+    let paidConsumedMs: Int?
+    let policyVersion: Int
+
+    var remainingMinutes: Int? {
+        guard let remainingMs else { return nil }
+        return Int(ceil(Double(remainingMs) / 60_000))
+    }
+}
+
+@MainActor
+final class UsageAccessManager: ObservableObject {
+    static let shared = UsageAccessManager()
+    static let immediateUnlimitedPurchaseEnabled = true
+    private static let trialProductID = "KirlosYousef.Whisper.AnnualThreeDayTrial"
+    private static let unlimitedProductID = "KirlosYousef.Whisper.AnnualUnlimited"
+    private static let demoKeychainAccount = "onboarding-demo-install-id"
+
+    @Published private(set) var snapshot: UsageAccessSnapshot?
+    @Published private(set) var isResolving = false
+    @Published private(set) var shouldShowFiveMinuteWarning = false
+
+    private var appToken: String?
+    private var appTokenExpiresAt = Date.distantPast
+    private var demoToken: String?
+    private var demoTokenExpiresAt = Date.distantPast
+
+    private struct SessionResponse: Decodable {
+        let token: String
+        let usage: UsageAccessSnapshot
+    }
+
+    func authorizationHeader(forOnboardingDemo isDemo: Bool = false) async throws -> String {
+        if isDemo {
+            if let demoToken, demoTokenExpiresAt > Date().addingTimeInterval(30) {
+                return "Bearer \(demoToken)"
+            }
+            let id = try onboardingDemoID()
+            var request = URLRequest(url: URL(string: "\(OpenAIConfiguration.workerBaseURL)/usage/demo-session")!)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONSerialization.data(withJSONObject: ["demoID": id])
+            let response = try await sendSessionRequest(request)
+            demoToken = response.token
+            demoTokenExpiresAt = Date().addingTimeInterval(240)
+            updateSnapshot(response.usage)
+            return "Bearer \(response.token)"
+        }
+
+        if let appToken, appTokenExpiresAt > Date().addingTimeInterval(30) {
+            return "Bearer \(appToken)"
+        }
+        let signedTransactions = await signedActiveSubscriptionTransactions()
+        guard !signedTransactions.isEmpty else { throw UsageAccessError.noVerifiedSubscription }
+        var request = URLRequest(url: URL(string: "\(OpenAIConfiguration.workerBaseURL)/usage/session")!)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "appUserID": Purchases.shared.appUserID,
+            "signedTransactions": signedTransactions
+        ])
+        let response = try await sendSessionRequest(request)
+        appToken = response.token
+        appTokenExpiresAt = Date().addingTimeInterval(270)
+        updateSnapshot(response.usage)
+        return "Bearer \(response.token)"
+    }
+
+    func refresh(force: Bool = false) async {
+        isResolving = true
+        defer { isResolving = false }
+        if force {
+            appToken = nil
+            appTokenExpiresAt = .distantPast
+        }
+        do {
+            _ = try await authorizationHeader()
+        } catch {
+            if error is UsageAccessError { snapshot = nil }
+            print("Usage access refresh: \(error.localizedDescription)")
+        }
+    }
+
+    func invalidateSession() {
+        appToken = nil
+        appTokenExpiresAt = .distantPast
+    }
+
+    func refreshUsageSnapshot() async {
+        do {
+            var request = URLRequest(url: URL(string: "\(OpenAIConfiguration.workerBaseURL)/usage/state")!)
+            request.httpMethod = "GET"
+            request.setValue(try await authorizationHeader(), forHTTPHeaderField: "Authorization")
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { return }
+            updateSnapshot(try JSONDecoder().decode(UsageAccessSnapshot.self, from: data))
+        } catch {
+            print("Usage snapshot refresh: \(error.localizedDescription)")
+        }
+    }
+
+    func markFiveMinuteWarningPresented() {
+        UserDefaults.standard.set(true, forKey: "trialFiveMinuteWarningPresented")
+        shouldShowFiveMinuteWarning = false
+    }
+
+    private func signedActiveSubscriptionTransactions() async -> [String] {
+        var transactions: [String] = []
+        for await result in StoreKit.Transaction.currentEntitlements {
+            guard case .verified(let transaction) = result,
+                  transaction.revocationDate == nil,
+                  transaction.expirationDate.map({ $0 > Date() }) == true,
+                  transaction.productID == Self.trialProductID || transaction.productID == Self.unlimitedProductID else { continue }
+            transactions.append(result.jwsRepresentation)
+        }
+        return transactions
+    }
+
+    private func sendSessionRequest(_ request: URLRequest) async throws -> SessionResponse {
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw UsageAccessError.verificationPending }
+        guard (200..<300).contains(http.statusCode) else {
+            if http.statusCode == 402 { throw UsageAccessError.trialExhausted }
+            if http.statusCode == 403 { throw UsageAccessError.noVerifiedSubscription }
+            if http.statusCode == 426 { throw UsageAccessError.updateRequired }
+            throw UsageAccessError.verificationPending
+        }
+        let decoded = try JSONDecoder().decode(SessionResponse.self, from: data)
+        return decoded
+    }
+
+    private func updateSnapshot(_ value: UsageAccessSnapshot) {
+        snapshot = value
+        if value.state == "trial",
+           let remainingMs = value.remainingMs,
+           remainingMs > 0,
+           remainingMs <= 5 * 60_000,
+           !UserDefaults.standard.bool(forKey: "trialFiveMinuteWarningPresented") {
+            shouldShowFiveMinuteWarning = true
+        }
+    }
+
+    private func onboardingDemoID() throws -> String {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Bundle.main.bundleIdentifier ?? "Revera",
+            kSecAttrAccount as String: Self.demoKeychainAccount,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        var result: CFTypeRef?
+        if SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+           let data = result as? Data,
+           let value = String(data: data, encoding: .utf8) { return value }
+        let value = UUID().uuidString.lowercased()
+        var item = query
+        item.removeValue(forKey: kSecReturnData as String)
+        item.removeValue(forKey: kSecMatchLimit as String)
+        item[kSecValueData as String] = Data(value.utf8)
+        item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        guard SecItemAdd(item as CFDictionary, nil) == errSecSuccess else { throw UsageAccessError.verificationPending }
+        return value
     }
 }
