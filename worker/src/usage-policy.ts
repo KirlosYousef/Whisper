@@ -1,6 +1,6 @@
 export const ACCESS_POLICY = {
   version: 1,
-  trialAllowanceMs: 30 * 60 * 1_000,
+  trialAllowanceMs: 30 * 1_000, // TEST ONLY: 30-second trial, do not merge
   demoAllowanceMs: 15 * 1_000,
   paidAllowanceMs: null as number | null,
 } as const;
