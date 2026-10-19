@@ -13,9 +13,15 @@ export interface Env {
   REVENUECAT_APP_ID?: string;
   REVENUECAT_SECRET_API_KEY?: string;
   MIXPANEL_PROJECT_TOKEN?: string;
+  /** Overrides the OpenAI origin; only set by the local test harness. */
+  OPENAI_API_BASE?: string;
 }
 
 const OPENAI_API = "https://api.openai.com";
+
+function openAIBase(env: Env): string {
+  return env.OPENAI_API_BASE ?? OPENAI_API;
+}
 const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
 const APP_SESSION_TTL_SECONDS = 5 * 60;
 const APP_STORE_PRODUCTS = new Set([
@@ -499,7 +505,7 @@ export class TrialUsageGateway extends DurableObject<Env> {
     const client = pair[0];
     const server = pair[1];
     const url = new URL(request.url);
-    const upstream = new URL(`${OPENAI_API}/v1/realtime`);
+    const upstream = new URL(`${openAIBase(this.env)}/v1/realtime`);
     upstream.search = url.search;
     const headers = new Headers(request.headers);
     headers.set("Authorization", `Bearer ${this.env.OPENAI_API_KEY}`);
@@ -732,7 +738,7 @@ async function proxyHTTP(request: Request, env: Env, path: string, claims: Acces
   const headers = openAIHeaders(request, env.OPENAI_API_KEY);
   let upstream: Response;
   try {
-    upstream = await fetch(`${OPENAI_API}${path}`, { method: "POST", headers, body: request.body });
+    upstream = await fetch(`${openAIBase(env)}${path}`, { method: "POST", headers, body: request.body });
   } catch {
     return jsonError("The transcription result is being verified. Retry shortly.", 503);
   }
@@ -791,7 +797,7 @@ export default {
         if (!response.ok) return withCors(response);
       }
       const headers = openAIHeaders(request, env.OPENAI_API_KEY);
-      return withCors(await fetch(`${OPENAI_API}${upstreamPath}`, { method: "POST", headers, body: request.body }));
+      return withCors(await fetch(`${openAIBase(env)}${upstreamPath}`, { method: "POST", headers, body: request.body }));
     }
     return proxyHTTP(request, env, upstreamPath, authorized.claims, authorized.stub);
   },
