@@ -147,6 +147,47 @@ test("streaming past the demo allowance closes with TRIAL_USAGE_EXHAUSTED", TIME
   assert.equal(result.reason, "TRIAL_USAGE_EXHAUSTED");
 });
 
+test("the last of the allowance is forwarded before the socket closes", TIMEOUT, async () => {
+  const token = await demoToken(worker.url);
+  const { socket } = connect(token, { audioSessionID: "exhaust-partial" });
+  const closing = closed(socket);
+  await open(socket);
+  await waitFor(() => mock.realtimeSockets.length > 0);
+  const record = upstreamRecord();
+
+  // 74 chunks of 200 ms leave 200 ms of the 15-second demo allowance; the final chunk is 400 ms.
+  const chunk = Buffer.from(randomBytes(9600)).toString("base64");
+  for (let index = 0; index < 74; index += 1) {
+    socket.send(JSON.stringify({ type: "input_audio_buffer.append", audio: chunk, audio_start_ms: index * 200 }));
+  }
+  socket.send(JSON.stringify({ type: "input_audio_buffer.append", audio: Buffer.from(randomBytes(19_200)).toString("base64"), audio_start_ms: 14_800 }));
+
+  const result = await closing;
+  assert.equal(result.code, 4409);
+  await waitFor(() => appends(record).length === 75);
+  assert.equal(Buffer.from(appends(record).at(-1).audio, "base64").length, 9600);
+});
+
+test("connecting with no allowance left is refused with HTTP 402", TIMEOUT, async () => {
+  const token = await demoToken(worker.url);
+  const first = connect(token, { audioSessionID: "spent" });
+  const closing = closed(first.socket);
+  await open(first.socket);
+  const audio = Buffer.from(randomBytes(9600)).toString("base64");
+  for (let index = 0; index < 80 && first.socket.readyState === WebSocket.OPEN; index += 1) {
+    first.socket.send(JSON.stringify({ type: "input_audio_buffer.append", audio, audio_start_ms: index * 200 }));
+  }
+  await closing;
+
+  const { socket } = connect(token, { audioSessionID: "spent-again" });
+  const status = await new Promise((resolve, reject) => {
+    socket.once("unexpected-response", (_request, response) => resolve(response.statusCode));
+    socket.once("open", () => reject(new Error("upgrade unexpectedly succeeded")));
+    socket.once("error", () => {});
+  });
+  assert.equal(status, 402);
+});
+
 test("a rejected upstream upgrade surfaces as HTTP 502", TIMEOUT, async () => {
   mock.setRejectRealtime(true);
   try {

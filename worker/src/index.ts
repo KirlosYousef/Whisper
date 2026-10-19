@@ -1,11 +1,12 @@
 import { DurableObject } from "cloudflare:workers";
 import { Buffer } from "node:buffer";
+import { APP_STORE_PRODUCTS, selectAccessTransaction, type VerifiedTransaction } from "./access-tier";
 import { APPLE_ROOT_CA_G2, APPLE_ROOT_CA_G3 } from "./apple-roots";
 import { verifyRevenueCatEntitlement } from "./revenuecat-entitlement";
 import { audioDurationMs } from "./audio-duration";
-import { decodeBase64, encodeBase64, pcm16DurationMs, sliceUncoveredAudio } from "./realtime-audio";
+import { decodeBase64, encodeBase64, PCM16_BYTES_PER_MS, pcm16DurationMs, sliceUncoveredAudio } from "./realtime-audio";
 import { handleRevenueCatWebhook } from "./revenuecat-webhook";
-import { ACCESS_POLICY, canReserveUsage, remainingUsage, usageAllowance } from "./usage-policy";
+import { ACCESS_POLICY, chargeableUsage, remainingUsage, usageAllowance } from "./usage-policy";
 
 export interface Env {
   OPENAI_API_KEY: string;
@@ -26,10 +27,6 @@ function openAIBase(env: Env): string {
 }
 const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
 const APP_SESSION_TTL_SECONDS = 5 * 60;
-const APP_STORE_PRODUCTS = new Set([
-  "KirlosYousef.Whisper.AnnualThreeDayTrial",
-  "KirlosYousef.Whisper.AnnualUnlimited",
-]);
 const ALLOWED_HTTP_ROUTES = new Map([
   ["/v1/audio/transcriptions", "/v1/audio/transcriptions"],
   ["/v1/chat/completions", "/v1/chat/completions"],
@@ -123,7 +120,8 @@ function usageObject(env: Env, originalTransactionId: string): DurableObjectStub
   return env.TRIAL_USAGE.get(env.TRIAL_USAGE.idFromName(originalTransactionId));
 }
 
-async function verifyTransaction(signedTransaction: string) {
+/** Verifies the JWS signature and app identity. Whether the transaction grants access is decided by `selectAccessTransaction`. */
+async function verifyTransaction(signedTransaction: string): Promise<VerifiedTransaction | undefined> {
   const { Environment, SignedDataVerifier } = await import("@apple/app-store-server-library");
   const bundleID = "KirlosYousef.Whisper";
   const appAppleID = 6748306699;
@@ -133,21 +131,13 @@ async function verifyTransaction(signedTransaction: string) {
     try {
       const verifier = new SignedDataVerifier(roots, false, environment, bundleID, environment === Environment.PRODUCTION ? appAppleID : undefined);
       const transaction = await verifier.verifyAndDecodeTransaction(signedTransaction);
-      if (!transaction.originalTransactionId || !APP_STORE_PRODUCTS.has(transaction.productId ?? "")) return undefined;
-      if (transaction.bundleId !== bundleID || transaction.revocationDate != null ||
-          typeof transaction.expiresDate !== "number" || transaction.expiresDate <= Date.now()) return undefined;
-      return transaction;
+      if (transaction.bundleId !== bundleID) return undefined;
+      return transaction as VerifiedTransaction;
     } catch {
       // A production JWS is expected to fail verification against the sandbox certificate chain, and vice versa.
     }
   }
   return undefined;
-}
-
-function accessTierForTransaction(transaction: Awaited<ReturnType<typeof verifyTransaction>>): "trial" | "paid" {
-  if (transaction?.productId === "KirlosYousef.Whisper.AnnualThreeDayTrial" &&
-      transaction.offerDiscountType === "FREE_TRIAL") return "trial";
-  return "paid";
 }
 
 async function createUsageSession(request: Request, env: Env): Promise<Response> {
@@ -165,26 +155,22 @@ async function createUsageSession(request: Request, env: Env): Promise<Response>
     return jsonError("A valid App Store transaction and RevenueCat customer are required.", 400);
   }
   const transactions = await Promise.all((body.signedTransactions as string[]).map(verifyTransaction));
-  const verified = transactions.filter((item): item is NonNullable<typeof item> => Boolean(item?.originalTransactionId && item.productId && item.expiresDate));
-  if (verified.length === 0) return jsonError("Subscription could not be verified.", 403);
-  const originalIDs = new Set(verified.map(item => item.originalTransactionId));
-  if (originalIDs.size !== 1) return jsonError("Active subscription ownership could not be resolved.", 403);
-  // Prefer the no-trial annual product if both transactions are temporarily present during a plan change.
-  const transaction = verified.sort((a, b) => {
-    const paidDifference = Number(accessTierForTransaction(b) === "paid") - Number(accessTierForTransaction(a) === "paid");
-    return paidDifference || (b.expiresDate ?? 0) - (a.expiresDate ?? 0);
-  })[0];
-  if (!transaction.originalTransactionId || !transaction.productId || !transaction.expiresDate) return jsonError("Subscription could not be verified.", 403);
+  const selection = selectAccessTransaction(transactions, Date.now());
+  if (!selection.ok) {
+    return selection.reason === "ambiguous_owner"
+      ? jsonError("Active subscription ownership could not be resolved.", 403, "subscription_inactive")
+      : jsonError("Subscription could not be verified.", 403, "subscription_inactive");
+  }
+  const { transaction, tier: accessTier } = selection;
   let revenueCatActive: boolean;
   try {
     revenueCatActive = await verifyRevenueCatEntitlement(body.appUserID, transaction, env.REVENUECAT_SECRET_API_KEY);
   } catch {
-    return jsonError("Your subscription is still being verified. Try again shortly.", 503);
+    return jsonError("Your subscription is still being verified. Try again shortly.", 503, "temporarily_unavailable");
   }
-  if (!revenueCatActive) return jsonError("RevenueCat could not verify this active subscription.", 403);
+  if (!revenueCatActive) return jsonError("RevenueCat could not verify this active subscription.", 403, "subscription_inactive");
 
   const expires = Math.min(Math.floor(transaction.expiresDate / 1000), Math.floor(Date.now() / 1000) + APP_SESSION_TTL_SECONDS);
-  const accessTier = accessTierForTransaction(transaction);
   const claims: AccessClaims = { sub: transaction.originalTransactionId, product: transaction.productId, accessTier, exp: expires };
   const stub = usageObject(env, transaction.originalTransactionId);
   const syncResponse = await stub.fetch("https://usage.internal/sync", {
@@ -394,19 +380,20 @@ export class TrialUsageGateway extends DurableObject<Env> {
     const current = demo ? usage?.demo_used_ms ?? 0 : paid ? usage?.paid_used_ms ?? 0 : usage?.trial_used_ms ?? 0;
     const reserved = demo ? usage?.demo_reserved_ms ?? 0 : paid ? usage?.paid_reserved_ms ?? 0 : usage?.trial_reserved_ms ?? 0;
     const tier = paid ? "paid" : demo ? "demo" : "trial";
-    if (!canReserveUsage(tier, current, reserved, uniqueMs)) throw new UsageLimitError();
+    const chargedMs = chargeableUsage(tier, current, reserved, uniqueMs);
+    if (chargedMs == null) throw new UsageLimitError();
 
     const accountingType = demo ? "demo" : paid ? "paid" : "trial";
     this.sql.exec(
       "INSERT INTO operations (operation_id, audio_session_id, start_ms, end_ms, consumed_ms, accounting_type, state, created_at_ms) VALUES (?, ?, ?, ?, ?, ?, 'reserved', ?)",
-      operationID, body.audioSessionID, startMs, endMs, uniqueMs, accountingType, Date.now(),
+      operationID, body.audioSessionID, startMs, endMs, chargedMs, accountingType, Date.now(),
     );
     if (operationKind !== "realtime") {
       this.sql.exec("INSERT INTO audio_jobs (audio_session_id, kind, start_ms, end_ms, operation_id) VALUES (?, ?, ?, ?, ?)", body.audioSessionID, operationKind, startMs, endMs, operationID);
     }
-    if (uniqueMs > 0) {
+    if (chargedMs > 0) {
       const reservedColumn = demo ? "demo_reserved_ms" : paid ? "paid_reserved_ms" : "trial_reserved_ms";
-      this.sql.exec(`UPDATE usage SET ${reservedColumn}=${reservedColumn}+? WHERE id=1`, uniqueMs);
+      this.sql.exec(`UPDATE usage SET ${reservedColumn}=${reservedColumn}+? WHERE id=1`, chargedMs);
     }
     if (uniqueMs > 0) {
       for (const range of overlaps) this.sql.exec("DELETE FROM audio_ranges WHERE audio_session_id=? AND start_ms=? AND end_ms=?", body.audioSessionID, range.start_ms, range.end_ms);
@@ -414,7 +401,7 @@ export class TrialUsageGateway extends DurableObject<Env> {
       const mergedEnd = Math.max(endMs, ...overlaps.map(range => range.end_ms));
       this.sql.exec("INSERT INTO audio_ranges (audio_session_id, start_ms, end_ms) VALUES (?, ?, ?)", body.audioSessionID, mergedStart, mergedEnd);
     }
-    return { accepted: true, alreadyCounted: false, operationID, chargedMs: uniqueMs, uncoveredRanges, ...this.snapshotSync() };
+    return { accepted: true, alreadyCounted: false, operationID, chargedMs, uncoveredRanges, ...this.snapshotSync() };
   }
 
   private snapshotSync() {
@@ -558,6 +545,12 @@ export class TrialUsageGateway extends DurableObject<Env> {
       if (bytes.length === 0) return;
       const { audio_start_ms: audioStartMs, ...append } = payload;
       const chunkStartMs = Number.isSafeInteger(audioStartMs) && Number(audioStartMs) >= 0 ? Number(audioStartMs) : runningOffsetMs;
+      const remainingMs = this.snapshotSync().remainingMs;
+      if (remainingMs != null && remainingMs < pcm16DurationMs(bytes.length)) {
+        // Transcribe the last of the allowance instead of dropping the whole final chunk.
+        if (remainingMs <= 0) return closeBoth(4409, "TRIAL_USAGE_EXHAUSTED");
+        bytes = bytes.subarray(0, remainingMs * PCM16_BYTES_PER_MS);
+      }
       const durationMs = pcm16DurationMs(bytes.length);
       const operationID = crypto.randomUUID();
       let result: UsageSnapshot;
