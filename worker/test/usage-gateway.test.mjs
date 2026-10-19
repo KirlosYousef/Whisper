@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { after, before, test } from "node:test";
+import { audioDurationMs } from "../src/audio-duration.ts";
 import { demoToken, startMockOpenAI, startWorker, wav } from "./support/harness.mjs";
 
 const TIMEOUT = { timeout: 60_000 };
@@ -49,9 +51,10 @@ async function transcribe(token, {
   bytes = wav(2000),
   kind = "transcription",
   authorization = `Bearer ${token}`,
+  mime = "audio/wav",
 } = {}) {
   const form = new FormData();
-  form.set("file", new Blob([bytes], { type: "audio/wav" }), "a.wav");
+  form.set("file", new Blob([bytes], { type: mime }), mime === "audio/wav" ? "a.wav" : "a.m4a");
   form.set("model", "x");
   return fetch(`${worker.url}/v1/audio/transcriptions`, {
     method: "POST",
@@ -173,4 +176,22 @@ test("a WAVE_FORMAT_EXTENSIBLE PCM recording is accepted", TIMEOUT, async () => 
   const response = await transcribe(token, { bytes: extensibleWav(2000) });
   assert.equal(response.status, 200);
   assert.equal((await usageState(token)).consumedMs, 2000);
+});
+
+test("an AAC M4A diarization recording is accepted and charged by its container duration", TIMEOUT, async () => {
+  const token = await demoToken(worker.url);
+  const bytes = readFileSync(new URL("./fixtures/speech.m4a", import.meta.url));
+  const expectedMs = audioDurationMs(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+  const response = await transcribe(token, { bytes, kind: "diarization", mime: "audio/mp4" });
+  assert.equal(response.status, 200);
+  assert.ok(mock.requests.at(-1).body.includes(bytes), "forwarded body does not contain the M4A bytes");
+  assert.ok(Math.abs((await usageState(token)).consumedMs - expectedMs) <= 50);
+});
+
+test("a truncated M4A is rejected with 400 and charges nothing", TIMEOUT, async () => {
+  const token = await demoToken(worker.url);
+  const bytes = readFileSync(new URL("./fixtures/speech.m4a", import.meta.url));
+  const response = await transcribe(token, { bytes: bytes.subarray(0, bytes.length - 1000), kind: "diarization", mime: "audio/mp4" });
+  assert.equal(response.status, 400);
+  assert.equal((await usageState(token)).consumedMs, 0);
 });

@@ -2,6 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import { Buffer } from "node:buffer";
 import { APPLE_ROOT_CA_G2, APPLE_ROOT_CA_G3 } from "./apple-roots";
 import { verifyRevenueCatEntitlement } from "./revenuecat-entitlement";
+import { audioDurationMs } from "./audio-duration";
 import { decodeBase64, encodeBase64, pcm16DurationMs, sliceUncoveredAudio } from "./realtime-audio";
 import { handleRevenueCatWebhook } from "./revenuecat-webhook";
 import { ACCESS_POLICY, canReserveUsage, remainingUsage, usageAllowance } from "./usage-policy";
@@ -120,41 +121,6 @@ async function verifyAccessToken(value: string, secret: string): Promise<AccessC
 
 function usageObject(env: Env, originalTransactionId: string): DurableObjectStub<TrialUsageGateway> {
   return env.TRIAL_USAGE.get(env.TRIAL_USAGE.idFromName(originalTransactionId));
-}
-
-function validateWavDurationMs(data: ArrayBuffer): number | undefined {
-  const view = new DataView(data);
-  if (data.byteLength < 44 || view.getUint32(0, false) !== 0x52494646 || view.getUint32(8, false) !== 0x57415645) return undefined;
-  let offset = 12;
-  let sampleRate: number | undefined;
-  let blockAlign: number | undefined;
-  let byteRate: number | undefined;
-  let encoding: number | undefined;
-  let channels: number | undefined;
-  let bitDepth: number | undefined;
-  let dataBytes: number | undefined;
-  while (offset + 8 <= data.byteLength) {
-    const id = view.getUint32(offset, false);
-    const size = view.getUint32(offset + 4, true);
-    const bodyOffset = offset + 8;
-    if (bodyOffset + size > data.byteLength) return undefined;
-    if (id === 0x666d7420 && size >= 16) {
-      encoding = view.getUint16(bodyOffset, true);
-      // WAVE_FORMAT_EXTENSIBLE: the real format is the SubFormat GUID's leading uint16 at fmt body offset 24.
-      if (encoding === 0xfffe && size >= 40) encoding = view.getUint16(bodyOffset + 24, true);
-      channels = view.getUint16(bodyOffset + 2, true);
-      sampleRate = view.getUint32(bodyOffset + 4, true);
-      byteRate = view.getUint32(bodyOffset + 8, true);
-      blockAlign = view.getUint16(bodyOffset + 12, true);
-      bitDepth = view.getUint16(bodyOffset + 14, true);
-    }
-    if (id === 0x64617461) dataBytes = size;
-    offset = bodyOffset + size + (size % 2);
-  }
-  if (encoding !== 1 || channels !== 1 || bitDepth !== 16 || !sampleRate || !blockAlign ||
-      blockAlign !== 2 || byteRate !== sampleRate * blockAlign || !dataBytes || dataBytes % blockAlign !== 0) return undefined;
-  const duration = Math.ceil((dataBytes / byteRate) * 1000);
-  return Number.isSafeInteger(duration) && duration > 0 ? duration : undefined;
 }
 
 async function verifyTransaction(signedTransaction: string) {
@@ -662,7 +628,7 @@ async function proxyHTTP(request: Request, env: Env, path: string, claims: Acces
     try { form = await request.formData(); } catch { return jsonError("Invalid audio request.", 400); }
     const audio = form.get("file");
     if (!(audio instanceof File) || audio.size <= 0 || audio.size > MAX_AUDIO_BYTES) return jsonError("A valid audio file is required.", 400);
-    const durationMs = validateWavDurationMs(await audio.arrayBuffer());
+    const durationMs = audioDurationMs(await audio.arrayBuffer());
     if (!durationMs) return jsonError("Audio duration could not be verified.", 400);
     operationID = request.headers.get("X-Usage-Operation-ID") ?? crypto.randomUUID();
     const audioSessionID = request.headers.get("X-Audio-Session-ID") ?? operationID;
