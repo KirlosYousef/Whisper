@@ -77,7 +77,11 @@ struct PayWallView: View {
                 }
                 track("Paywall Purchase Completed", properties: properties)
                 PaywallManager.shared.recordCompletedPaywallPurchase(customerInfo: customerInfo)
-                Task { _ = await UsageAccessManager.shared.refreshAfterPurchase() }
+                let productID = transaction?.productIdentifier
+                Task {
+                    let confirmation = await UsageAccessManager.shared.confirmPurchase(productID: productID)
+                    track("Paywall Purchase Access Confirmed", properties: ["result": String(describing: confirmation)])
+                }
             }
             .onPurchaseCancelled {
                 track("Paywall Purchase Cancelled", properties: activePackageProperties)
@@ -140,6 +144,95 @@ struct PayWallView: View {
         merged["demo_outcome"] = analyticsDemoOutcome
         merged["paywall_presentation_id"] = presentationID
         AnalyticsService.shared.trackEvent(event, properties: merged)
+    }
+}
+
+/// The one place that decides which paywall sheet is up, so screens never stack two.
+@MainActor
+final class PaywallCoordinator: ObservableObject {
+    static let shared = PaywallCoordinator()
+
+    enum Sheet: String, Identifiable {
+        /// Trial minutes are used: the Unlimited offer. (No subscription is the app's hard paywall, not a sheet.)
+        case upgrade
+
+        var id: String { rawValue }
+    }
+
+    @Published var sheet: Sheet?
+
+    func present(_ sheet: Sheet) {
+        self.sheet = sheet
+    }
+
+    func dismiss() {
+        sheet = nil
+    }
+}
+
+/// The Unlimited offer, and what happens after buying it: activating, scheduled by the App Store, or still on its way.
+struct UpgradePaywallSheet: View {
+    @ObservedObject private var usageAccess = UsageAccessManager.shared
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
+
+    var body: some View {
+        Group {
+            if usageAccess.isConfirmingPurchase {
+                VStack(spacing: 16) {
+                    ProgressView()
+                    Text("Activating Unlimited…")
+                        .font(.app(.semibold, size: 18))
+                    Text("This takes a few seconds.")
+                        .font(.app(.regular, size: 15))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(32)
+            } else if let start = usageAccess.scheduledUnlimitedStart {
+                upgradeStatus(
+                    icon: "calendar",
+                    title: "Unlimited starts \(start.formatted(date: .abbreviated, time: .omitted))",
+                    message: "The App Store starts your Unlimited plan when your trial ends. Your saved audio stays on this device and transcribes automatically then."
+                )
+            } else if usageAccess.purchaseConfirmation == .pending {
+                upgradeStatus(
+                    icon: "hourglass",
+                    title: "Purchase received",
+                    message: "The App Store is still confirming it. Unlimited unlocks automatically, usually within a minute.",
+                    retry: true
+                )
+            } else {
+                PayWallView(displayCloseButton: true, source: .trialExhausted, offeringIdentifier: UsageAccessManager.unlimitedOfferingID)
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: usageAccess.isConfirmingPurchase)
+    }
+
+    private func upgradeStatus(icon: String, title: String, message: String, retry: Bool = false) -> some View {
+        VStack(spacing: 16) {
+            Image(systemName: icon)
+                .font(.system(size: 40, weight: .semibold))
+            Text(title)
+                .font(.app(.semibold, size: 20))
+                .multilineTextAlignment(.center)
+            Text(message)
+                .font(.app(.regular, size: 15))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            if retry {
+                Button("Check again") {
+                    Task { _ = await usageAccess.confirmPurchase(productID: UsageAccessManager.unlimitedProductID) }
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            Button("Manage subscription") {
+                if let url = URL(string: "https://apps.apple.com/account/subscriptions") { openURL(url) }
+            }
+            .font(.app(.medium, size: 14))
+            Button("Close") { dismiss() }
+                .font(.app(.medium, size: 14))
+        }
+        .padding(32)
     }
 }
 

@@ -373,6 +373,9 @@ final class OnboardingDemoViewModel: NSObject, ObservableObject {
             if phase == .finishing {
                 scheduleFinishDebounce()
             }
+        case .subscriptionRequired:
+            // The demo uses its own short-lived session, so this means the preview could not be authorized.
+            handleRealtimeEvent(.failed("subscription_required"))
         case .failed(let message):
             isRealtimeConnected = false
             if phase == .connecting {

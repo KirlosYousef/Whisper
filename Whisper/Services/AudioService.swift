@@ -204,6 +204,14 @@ class AudioService: NSObject {
         }
     }
     
+    func requestPermission() async -> Bool {
+        await withCheckedContinuation { continuation in
+            requestPermission { granted in
+                continuation.resume(returning: granted)
+            }
+        }
+    }
+
     func startRecording(
         splitIntoSegments: Bool = true,
         storagePolicy: AudioStoragePolicy = .persistent,

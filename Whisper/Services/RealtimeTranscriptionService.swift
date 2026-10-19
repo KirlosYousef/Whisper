@@ -6,11 +6,16 @@ enum RealtimeTranscriptionEvent {
     case reconnecting(Int)
     case delta(itemID: String, text: String)
     case completed(itemID: String, transcript: String)
+    /// The trial minutes ran out (refused at connect, or the Worker closed the stream with 4409).
     case usageExhausted
+    /// No active subscription could be verified (refused at connect, or closed with 4403).
+    case subscriptionRequired
     case failed(String)
     case disconnected
 }
 
+/// Streams 24 kHz PCM16 audio to the Worker's realtime proxy and reports transcript events on the main queue.
+/// All mutable state is confined to `queue`.
 final class RealtimeTranscriptionService {
     private enum RealtimeTuning {
         static let useServerVAD = false
@@ -21,29 +26,33 @@ final class RealtimeTranscriptionService {
         static let vadSilenceDurationMs = 720
     }
 
+    private let queue = DispatchQueue(label: "RealtimeTranscriptionService")
     private var webSocket: URLSessionWebSocketTask?
     private var isSocketOpen = false
     private var isSessionReady = false
-    private var isStopping = false
+    /// `finish()` was called: no new audio, but keep receiving the last transcripts.
+    private var isFinishing = false
+    /// `disconnect()` or a terminal failure: ignore everything until the next `connect`.
+    private var isClosed = true
     private var connectionToken = UUID()
     private var uncommittedAudioByteCount = 0
     private var audioTimeline = RealtimeAudioTimeline(startOffsetMs: 0)
     private var commitTimer: DispatchSourceTimer?
     private var pingTimer: DispatchSourceTimer?
     private var skippedCommitIntervals = 0
-    private var handleErrorCount = 0
     private var reconnectAttempts = 0
     private var isReconnectScheduled = false
+    private var needsFreshToken = false
     private var lastLanguages: [String] = []
     private var audioSessionID = UUID().uuidString
     private var audioStartOffsetMs = 0
     private var isOnboardingDemo = false
-    private let sendQueue = DispatchQueue(label: "RealtimeTranscriptionService.send")
     private let minimumCommitByteCount = 24_000
     private let targetCommitByteCount = 96_000
     private let appendChunkByteCount = 9_600
     private let maximumPendingAudioByteCount = 192_000
     private let maxReconnectAttempts = 5
+    /// Called on the main queue.
     var onEvent: ((RealtimeTranscriptionEvent) -> Void)?
 
     var isConfigured: Bool {
@@ -57,91 +66,119 @@ final class RealtimeTranscriptionService {
         isOnboardingDemo: Bool = false
     ) {
         guard isConfigured else {
-            onEvent?(.failed("AI service is not configured. Update the Worker URL."))
+            emit(.failed("AI service is not configured. Update the Worker URL."))
             return
         }
-
-        lastLanguages = languages
-        self.audioSessionID = audioSessionID
-        self.audioStartOffsetMs = max(0, startOffsetMs)
-        self.isOnboardingDemo = isOnboardingDemo
-        reconnectAttempts = 0
-        isReconnectScheduled = false
-        isStopping = false
-        handleErrorCount = 0
-        closeSocket(notify: false, resetBuffers: true)
-        openConnection()
+        queue.async { [self] in
+            lastLanguages = languages
+            self.audioSessionID = audioSessionID
+            audioStartOffsetMs = max(0, startOffsetMs)
+            self.isOnboardingDemo = isOnboardingDemo
+            reconnectAttempts = 0
+            isReconnectScheduled = false
+            needsFreshToken = false
+            isFinishing = false
+            isClosed = false
+            closeSocketOnQueue(resetBuffers: true)
+            openConnectionOnQueue()
+        }
     }
 
     func sendAudio(_ pcm16Data: Data) {
         guard !pcm16Data.isEmpty else { return }
-        sendQueue.async { [weak self] in
-            guard let self, !self.isStopping else { return }
-            self.audioTimeline.enqueue(pcm16Data)
-            if self.isSocketOpen, self.isSessionReady {
-                if self.audioTimeline.bufferedByteCount >= self.appendChunkByteCount {
-                    self.flushOutgoingAudioOnQueue(flushRemainder: false)
+        queue.async { [self] in
+            guard !isClosed, !isFinishing else { return }
+            audioTimeline.enqueue(pcm16Data)
+            if isSocketOpen, isSessionReady {
+                if audioTimeline.bufferedByteCount >= appendChunkByteCount {
+                    flushOutgoingAudioOnQueue(flushRemainder: false)
                 }
             } else {
-                self.audioTimeline.dropOldest(toFit: self.maximumPendingAudioByteCount)
+                audioTimeline.dropOldest(toFit: maximumPendingAudioByteCount)
             }
         }
     }
 
+    /// Sends the buffered audio and commits it; the connection stays open for the final transcripts.
     func finish() {
-        isStopping = true
-        sendQueue.async { [weak self] in
-            self?.flushOutgoingAudioOnQueue(flushRemainder: true)
-            self?.commitAudioBufferOnQueue(force: true)
+        queue.async { [self] in
+            guard !isClosed else { return }
+            isFinishing = true
+            flushOutgoingAudioOnQueue(flushRemainder: true)
+            commitAudioBufferOnQueue(force: true)
         }
     }
 
     func disconnect() {
-        isStopping = true
-        reconnectAttempts = maxReconnectAttempts
-        closeSocket(notify: true, resetBuffers: true)
+        queue.async { [self] in
+            isClosed = true
+            isReconnectScheduled = false
+            closeSocketOnQueue(resetBuffers: true)
+            emit(.disconnected)
+        }
     }
 
-    private func openConnection() {
+    // MARK: Connection
+
+    private func openConnectionOnQueue() {
+        guard !isClosed else { return }
         guard let url = OpenAIConfiguration.realtimeURL else {
-            onEvent?(.failed("Realtime URL is invalid."))
+            terminate(with: .failed("Realtime URL is invalid."))
             return
         }
-
-        Task {
+        let token = UUID()
+        connectionToken = token
+        let isDemo = isOnboardingDemo
+        let refreshToken = needsFreshToken
+        needsFreshToken = false
+        Task { [weak self] in
+            let authorization: Result<String, Error>
             do {
-                let authorization = try await UsageAccessManager.shared.authorizationHeader(forOnboardingDemo: isOnboardingDemo)
-                guard !isStopping else { return }
-                let connectionToken = UUID()
-                self.connectionToken = connectionToken
-                isStopping = false
-                isReconnectScheduled = false
-                handleErrorCount = 0
-
-                var request = URLRequest(url: url)
-                request.setValue(authorization, forHTTPHeaderField: "Authorization")
-                request.setValue(audioSessionID, forHTTPHeaderField: "X-Audio-Session-ID")
-                request.setValue(String(audioStartOffsetMs), forHTTPHeaderField: "X-Audio-Start-MS")
-
-                let task = URLSession.shared.webSocketTask(with: request)
-                webSocket = task
-                task.resume()
-                isSocketOpen = true
-                isSessionReady = false
-                skippedCommitIntervals = 0
-                receiveNextMessage(token: connectionToken)
-                sendSessionUpdate(languages: lastLanguages)
-                if !RealtimeTuning.useServerVAD {
-                    startCommitTimer()
+                if refreshToken {
+                    await UsageAccessManager.shared.invalidateSession()
                 }
-                startPingTimer()
+                authorization = .success(try await UsageAccessManager.shared.authorizationHeader(forOnboardingDemo: isDemo))
             } catch {
-                DispatchQueue.main.async { [weak self] in self?.onEvent?(.failed(error.localizedDescription)) }
+                authorization = .failure(error)
             }
+            self?.queue.async { self?.openSocketOnQueue(authorization: authorization, url: url, token: token) }
         }
     }
 
-    private func closeSocket(notify: Bool, resetBuffers: Bool) {
+    private func openSocketOnQueue(authorization: Result<String, Error>, url: URL, token: UUID) {
+        guard !isClosed, token == connectionToken else { return }
+        let header: String
+        switch authorization {
+        case .failure(let error):
+            let failure = (error as? UsageAccessError).map { RealtimeConnectionFailure.classify($0) } ?? .transient
+            handleFailure(failure, message: error.localizedDescription)
+            return
+        case .success(let value):
+            header = value
+        }
+
+        var request = URLRequest(url: url)
+        request.setValue(header, forHTTPHeaderField: "Authorization")
+        request.setValue(audioSessionID, forHTTPHeaderField: "X-Audio-Session-ID")
+        request.setValue(String(audioStartOffsetMs), forHTTPHeaderField: "X-Audio-Start-MS")
+
+        let task = URLSession.shared.webSocketTask(with: request)
+        webSocket = task
+        isSocketOpen = true
+        isSessionReady = false
+        skippedCommitIntervals = 0
+        // Anything uncommitted went to the previous socket; the Worker skips audio it already received.
+        uncommittedAudioByteCount = 0
+        task.resume()
+        receiveNextMessage(on: task, token: token)
+        sendSessionUpdateOnQueue(languages: lastLanguages)
+        if !RealtimeTuning.useServerVAD {
+            startCommitTimer()
+        }
+        startPingTimer()
+    }
+
+    private func closeSocketOnQueue(resetBuffers: Bool) {
         connectionToken = UUID()
         isSocketOpen = false
         isSessionReady = false
@@ -154,12 +191,65 @@ final class RealtimeTranscriptionService {
             audioTimeline.reset(startOffsetMs: audioStartOffsetMs)
             skippedCommitIntervals = 0
         }
-        if notify {
-            onEvent?(.disconnected)
+    }
+
+    private func terminate(with event: RealtimeTranscriptionEvent) {
+        isClosed = true
+        isReconnectScheduled = false
+        closeSocketOnQueue(resetBuffers: true)
+        emit(event)
+    }
+
+    private func handleFailure(_ failure: RealtimeConnectionFailure, message: String) {
+        guard !isClosed else { return }
+        switch failure {
+        case .usageExhausted:
+            terminate(with: .usageExhausted)
+        case .subscriptionRequired:
+            Task { await UsageAccessManager.shared.invalidateSession() }
+            terminate(with: .subscriptionRequired)
+        case .updateRequired:
+            terminate(with: .failed(UsageAccessError.updateRequired.localizedDescription))
+        case .sessionExpired:
+            needsFreshToken = true
+            scheduleReconnect(message: message)
+        case .transient:
+            scheduleReconnect(message: message)
         }
     }
 
-    private func sendSessionUpdate(languages: [String]) {
+    private func scheduleReconnect(message: String) {
+        guard !isClosed, !isFinishing, !isReconnectScheduled else { return }
+        closeSocketOnQueue(resetBuffers: false)
+        guard reconnectAttempts < maxReconnectAttempts else {
+            terminate(with: .failed(message))
+            return
+        }
+        isReconnectScheduled = true
+        reconnectAttempts += 1
+        let attempt = reconnectAttempts
+        emit(.reconnecting(attempt))
+        let delay = min(8.0, pow(2.0, Double(attempt - 1)) * 0.5)
+        queue.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, self.isReconnectScheduled else { return }
+            self.isReconnectScheduled = false
+            self.openConnectionOnQueue()
+        }
+    }
+
+    private func socketFailed(_ task: URLSessionWebSocketTask, token: UUID, message: String) {
+        guard token == connectionToken, !isClosed else { return }
+        let status = (task.response as? HTTPURLResponse)?.statusCode
+        let closeCode = task.closeCode == .invalid ? nil : task.closeCode.rawValue
+        let failure = RealtimeConnectionFailure.classify(httpStatus: status, closeCode: closeCode)
+        // After `finish()` only a usage or subscription close matters; a plain close is the normal end.
+        if isFinishing, !failure.isTerminal { return }
+        handleFailure(failure, message: message)
+    }
+
+    // MARK: Session
+
+    private func sendSessionUpdateOnQueue(languages: [String]) {
         var transcription: [String: Any] = [
             "model": OpenAIConfiguration.realtimeTranscriptionModel,
             "prompt": OpenAIConfiguration.transcriptionPrompt
@@ -181,7 +271,7 @@ final class RealtimeTranscriptionService {
             transcription["languages"] = languageHints
         }
 
-        sendJSON([
+        sendJSONOnQueue([
             "type": "session.update",
             "session": [
                 "type": "transcription",
@@ -202,9 +292,19 @@ final class RealtimeTranscriptionService {
         ])
     }
 
+    private func markSessionReadyOnQueue() {
+        guard isSocketOpen, !isSessionReady else { return }
+        isSessionReady = true
+        reconnectAttempts = 0
+        flushOutgoingAudioOnQueue(flushRemainder: false)
+        emit(.connected)
+    }
+
+    // MARK: Timers
+
     private func startCommitTimer() {
         stopCommitTimer()
-        let timer = DispatchSource.makeTimerSource(queue: sendQueue)
+        let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(deadline: .now() + 2.0, repeating: 2.0)
         timer.setEventHandler { [weak self] in
             self?.commitAudioBufferOnQueue(force: false)
@@ -220,13 +320,15 @@ final class RealtimeTranscriptionService {
 
     private func startPingTimer() {
         stopPingTimer()
-        let timer = DispatchSource.makeTimerSource(queue: sendQueue)
+        let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(deadline: .now() + 10.0, repeating: 10.0)
         timer.setEventHandler { [weak self] in
             guard let self, self.isSocketOpen, let webSocket = self.webSocket else { return }
+            let token = self.connectionToken
             webSocket.sendPing { [weak self] error in
-                if let error {
-                    self?.handleError(error)
+                guard let error else { return }
+                self?.queue.async {
+                    self?.socketFailed(webSocket, token: token, message: error.localizedDescription)
                 }
             }
         }
@@ -238,6 +340,8 @@ final class RealtimeTranscriptionService {
         pingTimer?.cancel()
         pingTimer = nil
     }
+
+    // MARK: Audio
 
     private func commitAudioBufferOnQueue(force: Bool) {
         guard isSocketOpen, isSessionReady else {
@@ -286,23 +390,7 @@ final class RealtimeTranscriptionService {
         ])
     }
 
-    private func markSessionReady() {
-        sendQueue.async { [weak self] in
-            guard let self, self.isSocketOpen, !self.isSessionReady else { return }
-            self.isSessionReady = true
-            self.reconnectAttempts = 0
-            self.flushOutgoingAudioOnQueue(flushRemainder: false)
-            DispatchQueue.main.async {
-                self.onEvent?(.connected)
-            }
-        }
-    }
-
-    private func sendJSON(_ object: [String: Any]) {
-        sendQueue.async { [weak self] in
-            self?.sendJSONOnQueue(object)
-        }
-    }
+    // MARK: Messages
 
     private func sendJSONOnQueue(_ object: [String: Any]) {
         guard let data = try? JSONSerialization.data(withJSONObject: object),
@@ -311,33 +399,28 @@ final class RealtimeTranscriptionService {
         }
 
         guard let webSocket, isSocketOpen else { return }
+        let token = connectionToken
         webSocket.send(.string(text)) { [weak self] error in
-            if let error {
-                self?.handleError(error)
+            guard let error else { return }
+            self?.queue.async {
+                self?.socketFailed(webSocket, token: token, message: error.localizedDescription)
             }
         }
     }
 
-    private func receiveNextMessage(token: UUID) {
-        webSocket?.receive { [weak self] result in
+    private func receiveNextMessage(on task: URLSessionWebSocketTask, token: UUID) {
+        task.receive { [weak self] result in
             guard let self else { return }
-            guard token == self.connectionToken else { return }
-
-            switch result {
-            case .success(let message):
-                self.handle(message)
-                if self.isSocketOpen, token == self.connectionToken {
-                    self.receiveNextMessage(token: token)
-                }
-            case .failure(let error):
-                if self.webSocket?.closeCode.rawValue == 4409 || self.webSocket?.closeReason == Data("TRIAL_USAGE_EXHAUSTED".utf8) {
-                    self.isStopping = true
-                    self.closeSocket(notify: false, resetBuffers: true)
-                    DispatchQueue.main.async { self.onEvent?(.usageExhausted) }
-                    return
-                }
-                if !self.isStopping {
-                    self.handleError(error)
+            self.queue.async {
+                guard token == self.connectionToken, !self.isClosed else { return }
+                switch result {
+                case .success(let message):
+                    self.handle(message)
+                    if self.isSocketOpen, token == self.connectionToken {
+                        self.receiveNextMessage(on: task, token: token)
+                    }
+                case .failure(let error):
+                    self.socketFailed(task, token: token, message: error.localizedDescription)
                 }
             }
         }
@@ -362,7 +445,7 @@ final class RealtimeTranscriptionService {
 
         switch type {
         case "session.updated", "transcription_session.updated":
-            markSessionReady()
+            markSessionReadyOnQueue()
         case "conversation.item.input_audio_transcription.delta":
             let itemID = event["item_id"] as? String ?? "current"
             let text = (event["delta"] as? String)
@@ -370,13 +453,13 @@ final class RealtimeTranscriptionService {
                 ?? (event["text"] as? String)
                 ?? ""
             if !text.isEmpty {
-                onEvent?(.delta(itemID: itemID, text: text))
+                emit(.delta(itemID: itemID, text: text))
             }
         case "conversation.item.input_audio_transcription.completed":
             let itemID = event["item_id"] as? String ?? UUID().uuidString
             let transcript = (event["transcript"] as? String) ?? ""
             if !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                onEvent?(.completed(itemID: itemID, transcript: transcript))
+                emit(.completed(itemID: itemID, transcript: transcript))
             }
         case "error":
             let message = ((event["error"] as? [String: Any])?["message"] as? String) ?? "Realtime transcription failed."
@@ -384,41 +467,15 @@ final class RealtimeTranscriptionService {
                 (message.localizedCaseInsensitiveContains("empty") || message.localizedCaseInsensitiveContains("too small")) {
                 return
             }
-            handleTransientFailure(message)
+            handleFailure(.transient, message: message)
         default:
             break
         }
     }
 
-    private func handleError(_ error: Error) {
-        handleErrorCount += 1
-        handleTransientFailure(error.localizedDescription)
-    }
-
-    private func handleTransientFailure(_ message: String) {
-        sendQueue.async { [weak self] in
-            guard let self, !self.isStopping else { return }
-            guard !self.isReconnectScheduled else { return }
-
-            if self.reconnectAttempts >= self.maxReconnectAttempts {
-                self.closeSocket(notify: false, resetBuffers: false)
-                DispatchQueue.main.async {
-                    self.onEvent?(.failed(message))
-                }
-                return
-            }
-
-            self.isReconnectScheduled = true
-            self.closeSocket(notify: false, resetBuffers: false)
-            self.reconnectAttempts += 1
-            let delay = min(8.0, pow(2.0, Double(self.reconnectAttempts - 1)) * 0.5)
-            DispatchQueue.main.async {
-                self.onEvent?(.reconnecting(self.reconnectAttempts))
-            }
-            self.sendQueue.asyncAfter(deadline: .now() + delay) { [weak self] in
-                guard let self, !self.isStopping else { return }
-                self.openConnection()
-            }
+    private func emit(_ event: RealtimeTranscriptionEvent) {
+        DispatchQueue.main.async { [weak self] in
+            self?.onEvent?(event)
         }
     }
 }

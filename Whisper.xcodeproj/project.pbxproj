@@ -445,7 +445,6 @@
 				INFOPLIST_KEY_CFBundleDisplayName = "Revera AI";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Revera AI uses the microphone to record your voice only while you are actively recording. For example, when you tap record and speak, we capture that audio to transcribe what you said into text you can read, edit, and copy in the app.";
-				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "This app uses speech recognition to transcribe audio recordings when the online service is unavailable.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -480,7 +479,6 @@
 				INFOPLIST_KEY_CFBundleDisplayName = "Revera AI";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Revera AI uses the microphone to record your voice only while you are actively recording. For example, when you tap record and speak, we capture that audio to transcribe what you said into text you can read, edit, and copy in the app.";
-				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "This app uses speech recognition to transcribe audio recordings when the online service is unavailable.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;

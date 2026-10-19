@@ -82,7 +82,12 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     private var realtimeFlushDebounceWorkItem: DispatchWorkItem?
     private var realtimePrepareTimeoutWorkItem: DispatchWorkItem?
     private var isWaitingForRealtimeFlush = false
-    private var isWaitingToStartAfterRealtime = false
+    /// Resumed once with the first answer to a realtime connect made while starting a recording.
+    private var realtimeConnectContinuation: CheckedContinuation<RealtimeConnectResult, Never>?
+    /// Changes when a start is cancelled, so a start still waiting on access, permission or connect stops there.
+    private var startAttemptID = UUID()
+    /// The trial ran out while this realtime session was streaming; the rest of the audio waits for an upgrade.
+    private var realtimeUsageExhaustedDuringSession = false
     private var inFlightSegmentTranscriptions: Set<UUID> = []
     private var inFlightSpeakerIdentification: Set<UUID> = []
     @Published private(set) var identifyingSpeakerRecordingIds: Set<UUID> = []
@@ -98,18 +103,16 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         recordings.contains { recording in recording.segments.contains { $0.status == "locked" } }
     }
 
+    /// Transcribes audio that was saved while transcription minutes or the subscription were unavailable.
     @MainActor
     func retryUsageLockedTranscriptionsWhenAccessIsAvailable(refreshFirst: Bool = true) async {
         let usageAccess = UsageAccessManager.shared
         if refreshFirst {
             await usageAccess.refresh(force: true)
         }
-        guard let access = usageAccess.snapshot,
-              access.state == "paid" || (access.state == "trial" && (access.remainingMs ?? 0) > 0) else {
-            let trialExhausted = usageAccess.lastAccessError == .trialExhausted || usageAccess.snapshot?.remainingMs == 0
-            // Without a verified subscription the usage banner offers the trial paywall instead of a raw error.
-            if trialExhausted {
-                setErrorMessage(UsageAccessError.trialExhausted.localizedDescription)
+        guard usageAccess.accessState.canTranscribe else {
+            if usageAccess.accessState.isTrialExhausted {
+                isTrialUsageExhausted = true
             }
             return
         }
@@ -189,21 +192,6 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         preRecordingTranscriptionModeOverride = nil
     }
     
-    func requestPermission() {
-        AnalyticsService.shared.trackEvent("Recording Permission Requested", properties: nil)
-        audioService.requestPermission { granted in
-            DispatchQueue.main.async {
-                self.permissionDenied = !granted
-                self.showPermissionAlert = !granted
-                if !granted {
-                    AnalyticsService.shared.trackEvent("Recording Permission Denied", properties: nil)
-                } else {
-                    AnalyticsService.shared.trackEvent("Recording Permission Granted", properties: nil)
-                }
-            }
-        }
-    }
-
     private func configureRealtimeCallbacks() {
         realtimeTranscriptionService.onEvent = { [weak self] event in
             DispatchQueue.main.async {
@@ -215,16 +203,18 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     private func handleRealtimeEvent(_ event: RealtimeTranscriptionEvent) {
         switch event {
         case .connected:
-            guard isWaitingToStartAfterRealtime || isRecording else { return }
+            if realtimeConnectContinuation != nil {
+                resolveRealtimeConnect(.connected)
+                return
+            }
+            guard isRecording else { return }
             isRealtimeConnected = true
-            isRealtimeFallbackActive = false
-            realtimeStatusText = isWaitingToStartAfterRealtime ? nil : "Realtime transcription is live"
+            realtimeStatusText = "Realtime transcription is live"
             clearErrorMessage()
             AnalyticsService.shared.trackEvent("Realtime Transcription Connected", properties: nil)
-            if isWaitingToStartAfterRealtime {
-                finishRealtimePrepareAndStartCapture()
-            }
         case .reconnecting(let attempt):
+            // While starting, the connect timeout decides; reconnects are not shown yet.
+            guard isRecording else { return }
             isRealtimeConnected = false
             realtimeStatusText = "Reconnecting live captions…"
             AnalyticsService.shared.trackEvent("Realtime Transcription Reconnecting", properties: [
@@ -238,33 +228,36 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                 scheduleRealtimeFlushDebounce()
             }
         case .usageExhausted:
+            if realtimeConnectContinuation != nil {
+                resolveRealtimeConnect(.usageExhausted)
+                return
+            }
+            guard isRecording || isStartingRecording || isWaitingForRealtimeFlush else { return }
             isRealtimeConnected = false
             isTrialUsageExhausted = true
-            isRealtimeFallbackActive = false
-            hidesSegmentRowsDuringRealtime = false
-            realtimeStatusText = "Your 30 trial minutes are used. Audio is still being saved locally."
-            setErrorMessage(UsageAccessError.trialExhausted.localizedDescription)
+            realtimeUsageExhaustedDuringSession = true
+            realtimeStatusText = "Your 30 trial minutes are used. The rest of this recording is saved and transcribes after you upgrade."
+            Task { await UsageAccessManager.shared.refresh() }
             AnalyticsService.shared.trackEvent("Trial Transcription Minutes Exhausted", properties: [
                 "audio_session_id": activeAudioSessionID
             ])
-        case .failed(let message):
-            isRealtimeConnected = false
-            isRealtimeFallbackActive = true
-            hidesSegmentRowsDuringRealtime = false
-            if isWaitingToStartAfterRealtime {
-                fallbackToSegmentRecordingAfterPrepareFailure()
-                AnalyticsService.shared.trackEvent("Realtime Transcription Failed", properties: [
-                    "error": message,
-                    "during_prepare": true
-                ])
+        case .subscriptionRequired:
+            if realtimeConnectContinuation != nil {
+                resolveRealtimeConnect(.subscriptionRequired)
                 return
             }
-            realtimeStatusText = isRecording ? "Live captions paused. Audio is still being saved." : nil
-            if isRecording {
-                setErrorMessage("Live captions paused. Your recording is still being saved.")
-            } else {
-                setErrorMessage("Realtime transcription stopped (\(message)).")
+            guard isRecording || isStartingRecording else { return }
+            pauseLiveCaptions(message: UsageAccessError.noVerifiedSubscription.localizedDescription)
+            AnalyticsService.shared.trackEvent("Realtime Transcription Failed", properties: [
+                "error": "subscription_required"
+            ])
+        case .failed(let message):
+            if realtimeConnectContinuation != nil {
+                resolveRealtimeConnect(.unavailable(message))
+                return
             }
+            guard isRecording || isStartingRecording else { return }
+            pauseLiveCaptions(message: "Live captions paused. Your recording is still being saved.")
             AnalyticsService.shared.trackEvent("Realtime Transcription Failed", properties: [
                 "error": message
             ])
@@ -274,6 +267,14 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                 realtimeStatusText = nil
             }
         }
+    }
+
+    /// Live captions stopped mid-recording. The audio file keeps recording and is transcribed after stop.
+    private func pauseLiveCaptions(message: String) {
+        isRealtimeConnected = false
+        isRealtimeFallbackActive = true
+        hidesSegmentRowsDuringRealtime = false
+        realtimeStatusText = message
     }
 
     private func resetLiveTranscript() {
@@ -421,9 +422,100 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         fetchRecordings()
     }
     
-    func startRecording() {
-        guard !isStartingRecording, !isRecording, !isFinishingRealtime else { return }
+    /// Starts a recording in separate steps, each finishing before the next begins:
+    /// 1. access (trial minutes or subscription), 2. microphone permission, 3. live captions (realtime only), 4. audio capture.
+    /// Nothing is prompted or connected when access says the user must upgrade first.
+    @MainActor
+    func startRecording() async -> RecordingStartOutcome {
+        guard !isStartingRecording, !isRecording, !isFinishingRealtime else { return .cancelled }
+        let attempt = UUID()
+        startAttemptID = attempt
         isStartingRecording = true
+        prepareForNewSession()
+
+        // Step 1: access.
+        let access = await UsageAccessManager.shared.accessForRecording(isOnline: isOnline)
+        guard attempt == startAttemptID else { return .cancelled }
+        let decision = RecordingStartPolicy.decide(
+            access: access,
+            requestedMode: preRecordingTranscriptionMode,
+            isOnline: isOnline,
+            realtimeConfigured: realtimeTranscriptionService.isConfigured
+        )
+        var mode: TranscriptionMode
+        var notice: RecordingStartNotice?
+        switch decision {
+        case .requireUpgrade:
+            isStartingRecording = false
+            isTrialUsageExhausted = true
+            AnalyticsService.shared.trackEvent("Recording Blocked", properties: ["reason": "trial_exhausted"])
+            return .needsUpgrade
+        case .requireSubscription:
+            isStartingRecording = false
+            AnalyticsService.shared.trackEvent("Recording Blocked", properties: ["reason": "no_subscription"])
+            return .needsSubscription
+        case .start(let decidedMode, let decidedNotice):
+            mode = decidedMode
+            notice = decidedNotice
+        }
+
+        // Step 2: microphone permission.
+        AnalyticsService.shared.trackEvent("Recording Permission Requested", properties: nil)
+        let granted = await audioService.requestPermission()
+        guard attempt == startAttemptID else { return .cancelled }
+        permissionDenied = !granted
+        guard granted else {
+            isStartingRecording = false
+            showPermissionAlert = true
+            AnalyticsService.shared.trackEvent("Recording Permission Denied", properties: nil)
+            return .permissionDenied
+        }
+        AnalyticsService.shared.trackEvent("Recording Permission Granted", properties: nil)
+
+        // Step 3: live captions.
+        if mode == .realtimeOpenAI {
+            activeTranscriptionMode = .realtimeOpenAI
+            hidesSegmentRowsDuringRealtime = true
+            isPreparingRealtime = true
+            let result = await connectRealtime()
+            guard attempt == startAttemptID else { return .cancelled }
+            isPreparingRealtime = false
+            switch result {
+            case .connected:
+                break
+            case .usageExhausted:
+                realtimeTranscriptionService.disconnect()
+                hidesSegmentRowsDuringRealtime = false
+                isStartingRecording = false
+                isTrialUsageExhausted = true
+                await UsageAccessManager.shared.refresh()
+                return .needsUpgrade
+            case .subscriptionRequired:
+                realtimeTranscriptionService.disconnect()
+                mode = .segments20s
+                setErrorMessage(UsageAccessError.noVerifiedSubscription.localizedDescription)
+            case .unavailable(let reason):
+                realtimeTranscriptionService.disconnect()
+                mode = .segments20s
+                notice = .realtimeUnavailable
+                AnalyticsService.shared.trackEvent("Realtime Transcription Failed", properties: [
+                    "error": reason,
+                    "during_prepare": true
+                ])
+            }
+        }
+        activeTranscriptionMode = mode
+        if mode == .segments20s {
+            hidesSegmentRowsDuringRealtime = false
+        }
+        realtimeStatusText = notice?.message
+
+        // Step 4: audio capture.
+        return await beginAudioCapture(attempt: attempt)
+    }
+
+    /// Clears everything left over from the previous recording.
+    private func prepareForNewSession() {
         realtimeDisconnectWorkItem?.cancel()
         realtimeDisconnectWorkItem = nil
         realtimeFlushTimeoutWorkItem?.cancel()
@@ -437,127 +529,108 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         inFlightSegmentTranscriptions.removeAll()
         activeAudioSessionID = UUID().uuidString
         isTrialUsageExhausted = false
-
-        let requestedMode = preRecordingTranscriptionMode
-        let canUseRealtime = requestedMode == .realtimeOpenAI && isOnline && realtimeTranscriptionService.isConfigured
-        activeTranscriptionMode = canUseRealtime ? .realtimeOpenAI : .segments20s
+        realtimeUsageExhaustedDuringSession = false
+        activeTranscriptionMode = .segments20s
         resetLiveTranscript()
         clearErrorMessage()
         transcriptionService.preferredLanguages = transcriptionLanguageHints()
-
-        if requestedMode == .realtimeOpenAI && !canUseRealtime {
-            isRealtimeFallbackActive = true
-            realtimeStatusText = isOnline ? "Realtime unavailable. Recording with 20-second segments." : "Offline. Recording with 20-second segments."
-            setErrorMessage(realtimeStatusText ?? "Realtime unavailable. Recording with 20-second segments.")
-        }
-
-        if activeTranscriptionMode == .segments20s {
-            transcriptionService.requestSpeechRecognitionPermission()
-            beginAudioCapture()
-            return
-        }
-
-        hidesSegmentRowsDuringRealtime = true
-        isPreparingRealtime = true
-        isWaitingToStartAfterRealtime = true
-        realtimeStatusText = nil
-        realtimeTranscriptionService.connect(
-            languages: Languages.realtimeHints(selected: selectedLanguage, stored: settingsStore.transcriptionLanguage),
-            audioSessionID: activeAudioSessionID
-        )
-        scheduleRealtimePrepareTimeout()
     }
 
-    private func beginAudioCapture() {
-        audioService.startRecording(splitIntoSegments: activeTranscriptionMode == .segments20s) { success, filePath in
-            if success {
-                DispatchQueue.main.async {
-                    self.isStartingRecording = false
-                    self.isPreparingRealtime = false
-                    self.isWaitingToStartAfterRealtime = false
-                    self.isRecording = true
-                    self.isPaused = false
-                    // Capture the effective target translation language for this session
-                    let effective = self.sessionTranslationLanguage
-                    self.activeTargetTranslationLanguage = Languages.translationTarget(from: effective)
-                    // Create a new Recording for this session
-                    let rec = Recording(
-                        id: UUID(uuidString: self.activeAudioSessionID) ?? UUID(),
-                        duration: 0,
-                        filePath: filePath ?? UUID().uuidString,
-                        title: nil,
-                        transcriptionModeRawValue: self.activeTranscriptionMode.rawValue
-                    )
-                    rec.speakerStatus = self.settingsStore.identifySpeakers ? .pending : .skipped
-                    self.modelContext.insert(rec)
-                    self.activeRecording = rec
-                    self.recordings.insert(rec, at: 0)
+    @MainActor
+    private func connectRealtime() async -> RealtimeConnectResult {
+        await withCheckedContinuation { continuation in
+            realtimeConnectContinuation = continuation
+            realtimeTranscriptionService.connect(
+                languages: Languages.realtimeHints(selected: selectedLanguage, stored: settingsStore.transcriptionLanguage),
+                audioSessionID: activeAudioSessionID
+            )
+            let timeout = DispatchWorkItem { [weak self] in
+                self?.resolveRealtimeConnect(.unavailable("connect_timeout"))
+            }
+            realtimePrepareTimeoutWorkItem = timeout
+            DispatchQueue.main.asyncAfter(deadline: .now() + 10.0, execute: timeout)
+        }
+    }
 
-                    if self.activeTranscriptionMode == .realtimeOpenAI, self.isRealtimeConnected {
-                        HapticsManager.shared.impact(.medium)
-                    }
-                    
-                    AnalyticsService.shared.trackEvent("Recording Started", properties: [
-                        "translation_language": effective,
-                        "is_online": self.isOnline,
-                        "transcription_mode": self.activeTranscriptionMode.rawValue
-                    ])
-                }
-            } else {
-                DispatchQueue.main.async {
-                    self.cancelRealtimePrepare()
-                    self.isStartingRecording = false
-                    self.hidesSegmentRowsDuringRealtime = false
-                    self.realtimeStatusText = nil
-                    if let filePath, !filePath.isEmpty {
-                        self.setErrorMessage(filePath)
-                    }
-                }
-                AnalyticsService.shared.trackEvent("Recording Start Failed", properties: nil)
+    private func resolveRealtimeConnect(_ result: RealtimeConnectResult) {
+        realtimePrepareTimeoutWorkItem?.cancel()
+        realtimePrepareTimeoutWorkItem = nil
+        guard let continuation = realtimeConnectContinuation else { return }
+        realtimeConnectContinuation = nil
+        continuation.resume(returning: result)
+    }
+
+    @MainActor
+    private func beginAudioCapture(attempt: UUID) async -> RecordingStartOutcome {
+        let splitIntoSegments = activeTranscriptionMode == .segments20s
+        let (success, filePath) = await withCheckedContinuation { (continuation: CheckedContinuation<(Bool, String?), Never>) in
+            audioService.startRecording(splitIntoSegments: splitIntoSegments) { success, filePath in
+                continuation.resume(returning: (success, filePath))
             }
         }
+        guard attempt == startAttemptID else {
+            if success {
+                // Cancelled while the microphone started: discard this audio without filing it under another recording.
+                audioService.delegate = nil
+                audioService.stopRecording { _, _ in }
+                audioService.delegate = self
+            }
+            return .cancelled
+        }
+        guard success else {
+            isStartingRecording = false
+            hidesSegmentRowsDuringRealtime = false
+            realtimeStatusText = nil
+            if activeTranscriptionMode == .realtimeOpenAI {
+                realtimeTranscriptionService.disconnect()
+            }
+            setErrorMessage(filePath?.isEmpty == false ? filePath! : "The microphone couldn’t start. Please try again.")
+            AnalyticsService.shared.trackEvent("Recording Start Failed", properties: nil)
+            return .failed
+        }
+
+        isStartingRecording = false
+        isRecording = true
+        isPaused = false
+        let effective = sessionTranslationLanguage
+        activeTargetTranslationLanguage = Languages.translationTarget(from: effective)
+        let rec = Recording(
+            id: UUID(uuidString: activeAudioSessionID) ?? UUID(),
+            duration: 0,
+            filePath: filePath ?? UUID().uuidString,
+            title: nil,
+            transcriptionModeRawValue: activeTranscriptionMode.rawValue
+        )
+        rec.speakerStatus = settingsStore.identifySpeakers ? .pending : .skipped
+        modelContext.insert(rec)
+        activeRecording = rec
+        recordings.insert(rec, at: 0)
+
+        if activeTranscriptionMode == .realtimeOpenAI, !isRealtimeFallbackActive, !realtimeUsageExhaustedDuringSession {
+            isRealtimeConnected = true
+            realtimeStatusText = nil
+            HapticsManager.shared.impact(.medium)
+            AnalyticsService.shared.trackEvent("Realtime Transcription Connected", properties: nil)
+        }
+
+        AnalyticsService.shared.trackEvent("Recording Started", properties: [
+            "translation_language": effective,
+            "is_online": isOnline,
+            "transcription_mode": activeTranscriptionMode.rawValue
+        ])
+        return .started
     }
 
-    private func finishRealtimePrepareAndStartCapture() {
-        guard isWaitingToStartAfterRealtime else { return }
-        isWaitingToStartAfterRealtime = false
-        realtimePrepareTimeoutWorkItem?.cancel()
-        realtimePrepareTimeoutWorkItem = nil
-        beginAudioCapture()
-    }
-
-    private func fallbackToSegmentRecordingAfterPrepareFailure() {
-        guard isWaitingToStartAfterRealtime || isPreparingRealtime else { return }
-        realtimePrepareTimeoutWorkItem?.cancel()
-        realtimePrepareTimeoutWorkItem = nil
-        isWaitingToStartAfterRealtime = false
+    /// Stops a start that is still waiting on access, permission or the realtime connection.
+    private func cancelPendingStart() {
+        startAttemptID = UUID()
+        resolveRealtimeConnect(.unavailable("cancelled"))
         realtimeTranscriptionService.disconnect()
-        activeTranscriptionMode = .segments20s
-        hidesSegmentRowsDuringRealtime = false
-        isRealtimeFallbackActive = true
-        realtimeStatusText = "Realtime unavailable. Recording with 20-second segments."
-        setErrorMessage(realtimeStatusText ?? "Realtime unavailable. Recording with 20-second segments.")
-        transcriptionService.requestSpeechRecognitionPermission()
-        beginAudioCapture()
-    }
-
-    private func scheduleRealtimePrepareTimeout() {
-        realtimePrepareTimeoutWorkItem?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            self?.fallbackToSegmentRecordingAfterPrepareFailure()
-        }
-        realtimePrepareTimeoutWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 10.0, execute: work)
-    }
-
-    private func cancelRealtimePrepare() {
-        realtimePrepareTimeoutWorkItem?.cancel()
-        realtimePrepareTimeoutWorkItem = nil
-        isWaitingToStartAfterRealtime = false
+        isStartingRecording = false
         isPreparingRealtime = false
-        if !isRecording {
-            realtimeTranscriptionService.disconnect()
-        }
+        hidesSegmentRowsDuringRealtime = false
+        realtimeStatusText = nil
+        resetLiveTranscript()
     }
     
     func pauseRecording() {
@@ -572,12 +645,8 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     }
     
     func stopRecording() {
-        if isWaitingToStartAfterRealtime || (isStartingRecording && !isRecording) {
-            cancelRealtimePrepare()
-            isStartingRecording = false
-            hidesSegmentRowsDuringRealtime = false
-            realtimeStatusText = nil
-            resetLiveTranscript()
+        if isStartingRecording && !isRecording {
+            cancelPendingStart()
             return
         }
 
@@ -655,19 +724,47 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         persistLiveTranscriptIfNeeded()
         realtimeTranscriptionService.disconnect()
         if let rec = activeRecording {
-            if settingsStore.identifySpeakers, AudioService.isUsableAudioFile(at: rec.filePath) {
+            if realtimeUsageExhaustedDuringSession {
+                holdRealtimeRecordingForUpgrade(rec)
+            } else if settingsStore.identifySpeakers, AudioService.isUsableAudioFile(at: rec.filePath) {
                 identifySpeakersIfNeeded(for: rec)
             } else {
-                transcribeRealtimeRecordingIfNeeded(rec)
+                // Captions that dropped mid-recording cover only part of it, so transcribe the whole file.
+                transcribeRealtimeRecordingIfNeeded(rec, replacingLiveText: isRealtimeFallbackActive)
             }
         }
     }
 
-    private func transcribeRealtimeRecordingIfNeeded(_ recording: Recording) {
+    /// The trial ran out mid-stream: keep the live text, and save the whole recording to transcribe after an upgrade.
+    /// The Worker charges only audio the live stream did not already cover.
+    private func holdRealtimeRecordingForUpgrade(_ recording: Recording) {
+        realtimeStatusText = nil
+        guard AudioService.isUsableAudioFile(at: recording.filePath) else { return }
+        let alreadyHeld = segments(for: recording).contains {
+            $0.status == "locked" && $0.filePath == recording.filePath && $0.timestamp == 0
+        }
+        if !alreadyHeld {
+            modelContext.insert(TranscriptionSegment(
+                text: "",
+                status: "locked",
+                timestamp: 0,
+                filePath: recording.filePath,
+                recording: recording
+            ))
+        }
+        if recording.speakerStatus != .skipped {
+            recording.speakerStatus = .pending
+        }
+        try? modelContext.save()
+        fetchRecordings()
+    }
+
+    private func transcribeRealtimeRecordingIfNeeded(_ recording: Recording, replacingLiveText: Bool = false) {
         let url = URL(fileURLWithPath: recording.filePath)
         let fileSize = (try? FileManager.default.attributesOfItem(atPath: recording.filePath)[.size] as? NSNumber)?.intValue ?? 0
+        let hasLiveText = !recording.fullTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
 
-        if !recording.fullTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if hasLiveText, !replacingLiveText || fileSize <= 1000 {
             realtimeStatusText = nil
             attemptAutoSummarizeIfComplete(for: recording)
             return
@@ -923,9 +1020,12 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                     segment.text = ""
                 }
                 if case .trialExhausted = accessError {
+                    // The usage banner and the upgrade offer explain this; refresh so they appear right away.
                     isTrialUsageExhausted = true
+                    Task { await UsageAccessManager.shared.refresh() }
+                } else {
+                    setErrorMessage(accessError.localizedDescription)
                 }
-                setErrorMessage(accessError.localizedDescription)
                 AnalyticsService.shared.trackEvent("Saved Transcription Held For Subscription", properties: [
                     "segment_duration": duration,
                     "segment_start_time": segment.timestamp
@@ -975,6 +1075,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                     let translated = await TranscriptLanguageProcessor.translate(text, to: target)
                     segment.status = "completed"
                     segment.text = translated
+                    self.removeSupersededSegments(by: segment, in: rec)
                     self.assignTitleIfNeeded(to: rec, from: translated)
                     try? self.modelContext.save()
                     self.fetchRecordings()
@@ -985,6 +1086,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                 Task { @MainActor in
                     segment.status = "completed"
                     segment.text = text
+                    self.removeSupersededSegments(by: segment, in: rec)
                     self.assignTitleIfNeeded(to: rec, from: text)
                     try? self.modelContext.save()
                     self.fetchRecordings()
@@ -1002,6 +1104,21 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         }
     }
     
+    /// A transcript of the whole recording replaces the partial live text saved before the trial ran out.
+    private func removeSupersededSegments(by segment: TranscriptionSegment, in recording: Recording) {
+        guard segment.timestamp == 0, segment.filePath == recording.filePath else { return }
+        let superseded = segments(for: recording).filter {
+            $0.id != segment.id && $0.timestamp == 0 && ($0.speakerKey ?? "").isEmpty
+        }
+        guard !superseded.isEmpty else { return }
+        for old in superseded {
+            modelContext.delete(old)
+        }
+        // The summary was written from the partial text.
+        recording.summary = nil
+        recording.todoList = nil
+    }
+
     func fetchRecordings() {
         let descriptor = FetchDescriptor<Recording>(sortBy: [SortDescriptor(\.createdAt, order: .reverse)])
         if let fetched = try? modelContext.fetch(descriptor) {
@@ -1026,66 +1143,12 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                 segment.status == "queued"
             }
         )
-        
-        if let queuedSegments = try? modelContext.fetch(descriptor) {
-            for segment in queuedSegments {
-                if let _ = segment.recording {
-                    let audioURL = URL(fileURLWithPath: segment.filePath)
-                    inFlightSegmentTranscriptions.insert(segment.id)
-                    transcriptionService.transcribe(
-                        audioURL: audioURL,
-                        segmentStart: segment.timestamp,
-                        duration: 30.0,
-                        audioSessionID: segment.recording?.id.uuidString
-                    ) { [weak self] text, error in
-                        DispatchQueue.main.async {
-                            self?.inFlightSegmentTranscriptions.remove(segment.id)
-                            if let error = error {
-                                if let accessError = error as? UsageAccessError {
-                                    segment.status = "locked"
-                                    if case .trialExhausted = accessError {
-                                        self?.isTrialUsageExhausted = true
-                                    }
-                                    self?.setErrorMessage(accessError.localizedDescription)
-                                    segment.text = ""
-                                } else if let transcriptionError = error as? TranscriptionError, transcriptionError == .alreadyProcessed {
-                                    // Not a subscription problem and retrying will not help: keep any text we already have.
-                                    let hasText = !segment.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                    segment.status = hasText ? "completed" : "failed"
-                                } else {
-                                    segment.status = "failed"
-                                    segment.text = ""
-                                    self?.setErrorMessage("Transcription failed: \(error.localizedDescription)")
-                                }
-                            } else if let text = text {
-                                self?.clearErrorMessage()
-                                if let target = Languages.translationTarget(from: self?.sessionTranslationLanguage ?? Languages.autoCode) {
-                                    Task { @MainActor in
-                                        let translated = await TranscriptLanguageProcessor.translate(text, to: target)
-                                        segment.status = "completed"
-                                        segment.text = translated
-                                        try? self?.modelContext.save()
-                                        self?.fetchRecordings()
-                                        if let rec = segment.recording {
-                                            self?.attemptAutoSummarizeIfComplete(for: rec)
-                                            self?.maybeIdentifySpeakersAfterTranscription(for: rec)
-                                        }
-                                    }
-                                } else {
-                                    segment.status = "completed"
-                                    segment.text = text
-                                }
-                            }
-                            try? self?.modelContext.save()
-                            self?.fetchRecordings()
-                            if let rec = segment.recording {
-                                self?.attemptAutoSummarizeIfComplete(for: rec)
-                                self?.maybeIdentifySpeakersAfterTranscription(for: rec)
-                            }
-                        }
-                    }
-                }
-            }
+        guard let queuedSegments = try? modelContext.fetch(descriptor) else { return }
+        for segment in queuedSegments where !inFlightSegmentTranscriptions.contains(segment.id) {
+            guard let recording = segment.recording else { continue }
+            let url = URL(fileURLWithPath: segment.filePath)
+            guard FileManager.default.fileExists(atPath: url.path) else { continue }
+            startFileTranscription(url: url, duration: 20, startTime: segment.timestamp, recording: recording)
         }
     }
 
@@ -1228,7 +1291,9 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
             return
         }
 
-        guard isOnline else {
+        // Uploading the recording would only be refused; it runs once Unlimited is active.
+        let trialExhausted = MainActor.assumeIsolated { UsageAccessManager.shared.accessState.isTrialExhausted }
+        guard isOnline, !trialExhausted else {
             recording.speakerStatus = .pending
             try? modelContext.save()
             fetchRecordings()
@@ -1275,10 +1340,11 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         }
     }
 
+    /// Speaker identification runs only after every segment of a recording has finished transcribing.
     func processPendingSpeakerIdentifications() {
         fetchRecordings()
         for recording in recordings where recording.speakerStatus == .pending {
-            identifySpeakersIfNeeded(for: recording)
+            maybeIdentifySpeakersAfterTranscription(for: recording)
         }
     }
 
@@ -1354,6 +1420,15 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         }
 
         switch result {
+        case .failure(let error as UsageAccessError):
+            // Not a speaker problem: try again once transcription access is back.
+            recording.speakerStatus = .pending
+            if case .trialExhausted = error {
+                isTrialUsageExhausted = true
+            }
+            try? modelContext.save()
+            fetchRecordings()
+            AnalyticsService.shared.trackEvent("Speakers Identification Held For Subscription", properties: nil)
         case .failure(let error):
             recording.speakerStatus = .failed
             try? modelContext.save()
