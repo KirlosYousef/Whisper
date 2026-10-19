@@ -219,6 +219,24 @@ extension PaywallManager: PurchasesDelegate {
     }
 }
 
+/// Which paywall the main app shows over itself. `.none` lets the user in.
+enum ForcedPaywallReason: Equatable {
+    case none
+    /// No active subscription or trial: the trial start or subscribe offer.
+    case subscribe
+    /// The 30-minute trial is used up: the Unlimited offer.
+    case trialExhausted
+
+    /// The app is open only while the App Store entitlement (RevenueCat) or the Worker's usage state says the user is active.
+    static func resolve(isPremium: Bool, snapshot: UsageAccessSnapshot?) -> ForcedPaywallReason {
+        if snapshot?.state == "trial", snapshot?.remainingMs == 0 { return .trialExhausted }
+        if isPremium { return .none }
+        if snapshot?.state == "paid" { return .none }
+        if snapshot?.state == "trial", (snapshot?.remainingMs ?? 0) > 0 { return .none }
+        return .subscribe
+    }
+}
+
 enum UsageAccessError: LocalizedError {
     case noVerifiedSubscription
     case trialExhausted

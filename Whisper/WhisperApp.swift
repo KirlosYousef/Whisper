@@ -12,6 +12,7 @@ import RevenueCatUI
 @main
 struct WhisperApp: App {
     @StateObject private var paywallManager = PaywallManager.shared
+    @ObservedObject private var usageAccess = UsageAccessManager.shared
     @State private var showPaywallView = false
     @State private var selectedTab: Int = 0
     @StateObject private var viewModel: RecordingViewModel
@@ -19,11 +20,11 @@ struct WhisperApp: App {
     @StateObject private var lovePromptManager = LovePromptManager.shared
     @State private var didFinishLaunch = false
 
-    /// Debug-only: skip the blocking paywall so the main app can be tested after onboarding.
-    /// Release builds always show the paywall until the user is premium.
+    /// Debug-only escape hatch for UI work: launch with `-bypassPaywall` to skip the paywall.
+    /// Every other build, including Debug runs from Xcode, blocks the main app until the user is subscribed.
     private var bypassForcedPaywall: Bool {
         #if DEBUG
-        !ProcessInfo.processInfo.arguments.contains("-forcePaywall")
+        ProcessInfo.processInfo.arguments.contains("-bypassPaywall")
         #else
         false
         #endif
@@ -33,13 +34,14 @@ struct WhisperApp: App {
         settingsStore.hasCompletedOnboarding
     }
 
+    private var forcedPaywallReason: ForcedPaywallReason {
+        ForcedPaywallReason.resolve(isPremium: paywallManager.isPremium, snapshot: usageAccess.snapshot)
+    }
+
     private var shouldShowForcedPaywall: Bool {
         guard !bypassForcedPaywall else { return false }
         guard didFinishLaunch else { return false }
-        if !paywallManager.hasResolvedPremiumStatus {
-            return !paywallManager.isPremium
-        }
-        return !paywallManager.isPremium
+        return forcedPaywallReason != .none
     }
 
     private var paywallSource: PaywallSource {
@@ -117,14 +119,18 @@ struct WhisperApp: App {
                     }
                     
                     if shouldShowForcedPaywall {
-                        PayWallView(
-                            displayCloseButton: false,
-                            source: paywallSource,
-                            demoOutcome: settingsStore.onboardingDemoOutcome,
-                            onImpressionTracked: {
-                                settingsStore.pendingPaywallSource = ""
-                            }
-                        )
+                        if forcedPaywallReason == .trialExhausted {
+                            PayWallView(displayCloseButton: false, source: .trialExhausted, offeringIdentifier: "annualUnlimited")
+                        } else {
+                            PayWallView(
+                                displayCloseButton: false,
+                                source: paywallSource,
+                                demoOutcome: settingsStore.onboardingDemoOutcome,
+                                onImpressionTracked: {
+                                    settingsStore.pendingPaywallSource = ""
+                                }
+                            )
+                        }
                     }
 
                     if lovePromptManager.isPresented
