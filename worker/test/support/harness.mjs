@@ -21,6 +21,7 @@ function listen(server) {
 export async function startMockOpenAI({ onHTTP, onRealtime } = {}) {
   const requests = [];
   const realtimeSockets = [];
+  const control = { rejectRealtime: false };
   const server = createServer(async (req, res) => {
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
@@ -33,7 +34,7 @@ export async function startMockOpenAI({ onHTTP, onRealtime } = {}) {
   const wss = new WebSocketServer({ noServer: true });
   server.on("upgrade", (req, socket, head) => {
     requests.push({ method: req.method, url: req.url, headers: req.headers, upgrade: true });
-    if (req.headers.authorization !== "Bearer test-openai-key") {
+    if (control.rejectRealtime || req.headers.authorization !== "Bearer test-openai-key") {
       socket.end("HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n");
       return;
     }
@@ -49,6 +50,8 @@ export async function startMockOpenAI({ onHTTP, onRealtime } = {}) {
     url: `http://127.0.0.1:${port}`,
     requests,
     realtimeSockets,
+    /** When true, the mock answers every realtime upgrade with 401. */
+    setRejectRealtime(value) { control.rejectRealtime = value; },
     async stop() {
       for (const client of wss.clients) client.terminate();
       server.closeAllConnections();

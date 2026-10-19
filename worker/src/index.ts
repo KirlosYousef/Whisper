@@ -2,6 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import { Buffer } from "node:buffer";
 import { APPLE_ROOT_CA_G2, APPLE_ROOT_CA_G3 } from "./apple-roots";
 import { verifyRevenueCatEntitlement } from "./revenuecat-entitlement";
+import { decodeBase64, encodeBase64, pcm16DurationMs, sliceUncoveredAudio } from "./realtime-audio";
 import { handleRevenueCatWebhook } from "./revenuecat-webhook";
 import { ACCESS_POLICY, canReserveUsage, remainingUsage, usageAllowance } from "./usage-policy";
 
@@ -499,128 +500,120 @@ export class TrialUsageGateway extends DurableObject<Env> {
   }
 
   private async startRealtime(request: Request): Promise<Response> {
-    const snapshot = await this.snapshot();
-    if (!snapshot.active) return jsonError("Subscription has expired.", 402);
-    const pair = new WebSocketPair();
-    const client = pair[0];
-    const server = pair[1];
-    const url = new URL(request.url);
-    const upstream = new URL(`${openAIBase(this.env)}/v1/realtime`);
-    upstream.search = url.search;
-    const headers = new Headers(request.headers);
-    headers.set("Authorization", `Bearer ${this.env.OPENAI_API_KEY}`);
-    headers.delete("x-audio-session-id");
-    headers.delete("x-audio-start-ms");
-    headers.delete("x-usage-session-expires");
-    headers.delete("authorization");
-    let upstreamSocket: WebSocket | undefined;
-    try {
-      const response = await fetch(new Request(upstream, { method: "GET", headers }));
-      upstreamSocket = response.webSocket ?? undefined;
-      if (!upstreamSocket) {
-        server.close(1011, "Realtime service unavailable.");
-        return new Response("Realtime service unavailable.", { status: 502 });
-      }
-      upstreamSocket.accept();
-    } catch {
-      server.close(1011, "Realtime service unavailable.");
-      return new Response("Realtime service unavailable.", { status: 502 });
-    }
-    const audioSessionID = request.headers.get("X-Audio-Session-ID") ?? crypto.randomUUID();
+    const clientSessionID = request.headers.get("X-Audio-Session-ID") ?? "";
+    const audioSessionID = clientSessionID.length >= 1 && clientSessionID.length <= 128 ? clientSessionID : crypto.randomUUID();
     const offsetMs = Number(request.headers.get("X-Audio-Start-MS") ?? 0);
-    const sessionExpiresAt = Number(request.headers.get("X-Usage-Session-Expires") ?? 0);
-    if (!Number.isSafeInteger(offsetMs) || offsetMs < 0 || !Number.isSafeInteger(sessionExpiresAt) || sessionExpiresAt <= Date.now()) {
-      server.close(1008, "Invalid audio session.");
-      upstreamSocket.close(1000, "Invalid audio session.");
-      return jsonError("Invalid audio session.", 400);
+    if (!Number.isSafeInteger(offsetMs) || offsetMs < 0) return jsonError("Invalid audio session.", 400);
+
+    const snapshot = await this.snapshot();
+    if (!snapshot.active) return jsonError("Subscription has expired.", 403);
+    if (snapshot.remainingMs === 0) return jsonError("trial_exhausted", 402);
+
+    const upstreamURL = new URL(`${openAIBase(this.env)}/v1/realtime`);
+    upstreamURL.search = new URL(request.url).search;
+    const headers = new Headers({ Upgrade: "websocket", Authorization: `Bearer ${this.env.OPENAI_API_KEY}` });
+    for (const name of ["Sec-WebSocket-Protocol", "OpenAI-Beta"]) {
+      const value = request.headers.get(name);
+      if (value) headers.set(name, value);
     }
-    server.serializeAttachment({ role: "client", pairID: crypto.randomUUID(), audioSessionID, offsetMs, sessionExpiresAt });
-    upstreamSocket.serializeAttachment({ role: "upstream", pairID: (server.deserializeAttachment() as { pairID: string }).pairID });
-    this.ctx.acceptWebSocket(server);
-    this.ctx.acceptWebSocket(upstreamSocket);
+    let upstream: WebSocket;
+    try {
+      const response = await fetch(upstreamURL, { headers });
+      if (!response.webSocket) {
+        console.error("Realtime upstream rejected the upgrade.", response.status);
+        return jsonError("Realtime service unavailable.", 502);
+      }
+      upstream = response.webSocket;
+    } catch (error) {
+      console.error("Realtime upstream connection failed.", error);
+      return jsonError("Realtime service unavailable.", 502);
+    }
+
+    const [client, server] = Object.values(new WebSocketPair());
+    server.accept();
+    upstream.accept();
+
+    let closed = false;
+    let runningOffsetMs = offsetMs;
+    const closeBoth = (code: number, reason: string) => {
+      if (closed) return;
+      closed = true;
+      closeSocket(server, code, reason);
+      closeSocket(upstream, code, reason);
+    };
+    const forwardUpstream = (data: string | ArrayBuffer) => {
+      try {
+        upstream.send(data);
+      } catch {
+        closeBoth(1011, "Realtime connection failed.");
+      }
+    };
+
+    server.addEventListener("message", event => {
+      if (closed) return;
+      if (typeof event.data !== "string") return forwardUpstream(event.data);
+      let payload: Record<string, unknown> | null;
+      try {
+        payload = JSON.parse(event.data) as Record<string, unknown> | null;
+      } catch {
+        return forwardUpstream(event.data);
+      }
+      if (payload?.type !== "input_audio_buffer.append" || typeof payload.audio !== "string") return forwardUpstream(event.data);
+
+      let bytes: Uint8Array;
+      try {
+        bytes = decodeBase64(payload.audio);
+      } catch {
+        return forwardUpstream(event.data);
+      }
+      if (bytes.length === 0) return;
+      const { audio_start_ms: audioStartMs, ...append } = payload;
+      const chunkStartMs = Number.isSafeInteger(audioStartMs) && Number(audioStartMs) >= 0 ? Number(audioStartMs) : runningOffsetMs;
+      const durationMs = pcm16DurationMs(bytes.length);
+      const operationID = crypto.randomUUID();
+      let result: UsageSnapshot;
+      try {
+        result = this.consume({ operationID, audioSessionID, startMs: chunkStartMs, durationMs, operationKind: "realtime" });
+      } catch (error) {
+        if (error instanceof UsageLimitError) closeBoth(4409, "TRIAL_USAGE_EXHAUSTED");
+        else closeBoth(1011, "Realtime usage could not be recorded.");
+        return;
+      }
+      runningOffsetMs += durationMs;
+
+      try {
+        for (const slice of sliceUncoveredAudio(bytes, chunkStartMs, result.uncoveredRanges ?? [])) {
+          upstream.send(JSON.stringify({ ...append, audio: encodeBase64(slice) }));
+        }
+      } catch {
+        closeBoth(1011, "Realtime connection failed.");
+        return;
+      }
+      this.completeOperation({ operationID, status: 200 });
+      if (this.snapshotSync().remainingMs === 0) closeBoth(4409, "TRIAL_USAGE_EXHAUSTED");
+    });
+    server.addEventListener("close", event => closeBoth(event.code, event.reason));
+    upstream.addEventListener("close", event => closeBoth(event.code, event.reason));
+    server.addEventListener("error", () => closeBoth(1011, "Realtime connection failed."));
+    upstream.addEventListener("error", () => closeBoth(1011, "Realtime connection failed."));
+    upstream.addEventListener("message", event => {
+      try {
+        server.send(event.data);
+      } catch {
+        closeBoth(1011, "Realtime connection failed.");
+      }
+    });
+
     return new Response(null, { status: 101, webSocket: client });
   }
+}
 
-  async webSocketMessage(socket: WebSocket, message: string | ArrayBuffer): Promise<void> {
-    const attachment = socket.deserializeAttachment() as { role: "client" | "upstream"; pairID: string; audioSessionID?: string; offsetMs?: number; sessionExpiresAt?: number } | null;
-    if (!attachment) return socket.close(1011, "Session expired.");
-    const peer = this.ctx.getWebSockets().find(candidate => {
-      const peerAttachment = candidate.deserializeAttachment() as { role?: string; pairID?: string } | null;
-      return peerAttachment?.pairID === attachment.pairID && peerAttachment.role !== attachment.role;
-    });
-    if (!peer) return socket.close(1011, "Realtime session ended.");
-    if (attachment.role !== "client" || typeof message !== "string") {
-      try { peer.send(message); } catch { socket.close(1011, "Realtime session ended."); }
-      return;
-    }
-    let payload: Record<string, unknown>;
-    try { payload = JSON.parse(message) as Record<string, unknown>; } catch { return; }
-    if (payload.type === "input_audio_buffer.append" && typeof payload.audio === "string") {
-      if ((attachment.sessionExpiresAt ?? 0) <= Date.now()) {
-        this.closePair(attachment.pairID, 4401, "SUBSCRIPTION_VERIFICATION_EXPIRED");
-        return;
-      }
-      const bytes = decodeBase64URL(payload.audio.replace(/\+/g, "-").replace(/\//g, "_"));
-      const meterableBytes = Math.floor(bytes.length / 48) * 48;
-      if (meterableBytes === 0) return;
-      const chunkStartMs = Number.isSafeInteger(payload.audio_start_ms) ? Number(payload.audio_start_ms) : attachment.offsetMs!;
-      const requestedMs = meterableBytes / 48;
-      let result: ReturnType<TrialUsageGateway["consume"]>;
-      try {
-        result = this.consume({
-          operationID: crypto.randomUUID(),
-          audioSessionID: attachment.audioSessionID!,
-          startMs: chunkStartMs,
-          durationMs: requestedMs,
-          operationKind: "realtime",
-        });
-      } catch {
-        this.closePair(attachment.pairID, 4409, "TRIAL_USAGE_EXHAUSTED");
-        return;
-      }
-      for (const range of result.uncoveredRanges ?? []) {
-        const firstByte = Math.max(0, Math.floor((range.startMs - chunkStartMs) * 48));
-        const lastByte = Math.min(meterableBytes, Math.floor((range.endMs - chunkStartMs) * 48));
-        const alignedStart = firstByte - firstByte % 48;
-        const alignedEnd = lastByte - lastByte % 48;
-        if (alignedEnd <= alignedStart) continue;
-        const outgoing: Record<string, unknown> = { ...payload, audio_start_ms: range.startMs, audio: encodeBase64URL(bytes.subarray(alignedStart, alignedEnd)) };
-        delete outgoing.audio_start_ms;
-        try {
-          peer.send(JSON.stringify(outgoing));
-          this.completeOperation({ operationID: result.operationID, status: 200 });
-        } catch {
-          this.closePair(attachment.pairID, 1011, "Realtime session ended.");
-          return;
-        }
-      }
-      if (result.uncoveredRanges?.length === 0) this.completeOperation({ operationID: result.operationID, status: 200 });
-      attachment.offsetMs = Math.max(attachment.offsetMs ?? 0, chunkStartMs + requestedMs);
-      socket.serializeAttachment(attachment);
-      const snapshot = await this.snapshot();
-      if (snapshot.remainingMs === 0) this.closePair(attachment.pairID, 4409, "TRIAL_USAGE_EXHAUSTED");
-      return;
-    }
-    try { peer.send(message); } catch { this.closePair(attachment.pairID, 1011, "Realtime session ended."); }
-  }
-
-  webSocketClose(socket: WebSocket, code: number, reason: string): void {
-    const attachment = socket.deserializeAttachment() as { pairID?: string } | null;
-    if (attachment?.pairID) this.closePair(attachment.pairID, code, reason);
-  }
-
-  webSocketError(socket: WebSocket): void {
-    const attachment = socket.deserializeAttachment() as { pairID?: string } | null;
-    if (attachment?.pairID) this.closePair(attachment.pairID, 1011, "Realtime connection failed.");
-  }
-
-  private closePair(pairID: string, code: number, reason: string): void {
-    for (const socket of this.ctx.getWebSockets()) {
-      const attachment = socket.deserializeAttachment() as { pairID?: string } | null;
-      if (attachment?.pairID === pairID) {
-        try { socket.close(code, reason); } catch { /* It may already be closed. */ }
-      }
-    }
+function closeSocket(socket: WebSocket, code: number, reason: string): void {
+  const safeCode = code === 1005 ? 1000 : code === 1006 || code === 1015 ? 1011 : code;
+  try {
+    socket.close(safeCode, reason);
+  } catch {
+    // The socket may already be closed.
   }
 }
 
@@ -779,11 +772,7 @@ export default {
     if (isWebSocket && url.pathname === "/v1/realtime") {
       const authorized = await authorizedUsage(request, env);
       if (authorized instanceof Response) return authorized;
-      const headers = new Headers(request.headers);
-      headers.set("Authorization", `Bearer ${await signAccessToken(authorized.claims, env.USAGE_SESSION_SECRET!)}`);
-      headers.set("X-Usage-Session-Expires", String(authorized.claims.exp * 1_000));
-      const stub = authorized.stub;
-      return stub.fetch(new Request(url, { method: "GET", headers }));
+      return authorized.stub.fetch(request);
     }
     const upstreamPath = ALLOWED_HTTP_ROUTES.get(url.pathname);
     if (request.method !== "POST" || !upstreamPath) return jsonError("Route not found.", 404);
