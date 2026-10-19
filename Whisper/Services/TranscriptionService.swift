@@ -273,7 +273,15 @@ class TranscriptionService {
             completion(.failure(TranscriptionError.apiKeyNotConfigured))
             return
         }
-        diarizeWithRetry(audioURL: audioURL, retryCount: 0, operationID: UUID().uuidString, audioSessionID: audioSessionID ?? UUID().uuidString, completion: completion)
+        let sessionID = audioSessionID ?? UUID().uuidString
+        Task {
+            do {
+                let result = try await diarizeChunked(audioURL: audioURL, audioSessionID: sessionID)
+                completion(.success(result))
+            } catch {
+                completion(.failure(error))
+            }
+        }
     }
 
     static func parseDiarizedJSON(_ data: Data) throws -> DiarizationResult {
@@ -284,35 +292,128 @@ class TranscriptionService {
         SpeakerDiarizationParser.mergeAdjacentTurns(turns, gap: gap)
     }
 
-    private func diarizeWithRetry(audioURL: URL, retryCount: Int, operationID: String, audioSessionID: String, completion: @escaping (Result<DiarizationResult, Error>) -> Void) {
-        diarizeWithOpenAI(audioURL: audioURL, operationID: operationID, audioSessionID: audioSessionID) { [weak self] result in
-            guard let self else { return }
+    /// A speaker clip sent to the endpoint so later chunks reuse the speaker labels from the first chunk.
+    private struct KnownSpeaker {
+        var name: String
+        var referenceDataURI: String
+    }
 
-            if case .failure(let error) = result, self.isRetryable(error), retryCount < self.maxRetries {
-                let base = TimeInterval(pow(2.0, Double(retryCount)))
-                let jitter = Double.random(in: 0...0.5)
-                let delay = min(30.0, base + jitter)
-                DispatchQueue.global().asyncAfter(deadline: .now() + delay) {
-                    self.diarizeWithRetry(audioURL: audioURL, retryCount: retryCount + 1, operationID: operationID, audioSessionID: audioSessionID, completion: completion)
-                }
-                return
+    /// Splits the recording into bounded chunks, uploads them one at a time in order, and merges the results.
+    /// Any chunk that fails after its retries fails the whole call.
+    private func diarizeChunked(audioURL: URL, audioSessionID: String) async throws -> DiarizationResult {
+        let totalDuration = try DiarizationAudioEncoder.duration(of: audioURL)
+        let plan = DiarizationChunkPlanner.plan(totalDuration: totalDuration)
+        guard !plan.isEmpty else {
+            throw TranscriptionError.invalidResponse
+        }
+
+        var completedChunks: [(offset: TimeInterval, result: DiarizationResult)] = []
+        var knownSpeakers: [KnownSpeaker] = []
+
+        for (index, range) in plan.enumerated() {
+            let chunkURL = try DiarizationAudioEncoder.encodeChunk(
+                source: audioURL,
+                start: range.start,
+                duration: range.duration
+            )
+            defer { try? FileManager.default.removeItem(at: chunkURL) }
+
+            let operationID = UUID().uuidString
+            let parsed = try await diarizeChunkWithRetry(
+                fileURL: chunkURL,
+                chunkIndex: index,
+                startTime: range.start,
+                operationID: operationID,
+                audioSessionID: audioSessionID,
+                knownSpeakers: knownSpeakers
+            )
+
+            if index == 0, plan.count > 1 {
+                knownSpeakers = Self.knownSpeakers(from: parsed.turns, sourceURL: audioURL)
             }
 
-            completion(result)
+            let remapped = DiarizationResult(
+                duration: parsed.duration,
+                text: parsed.text,
+                turns: DiarizationChunkMerger.remap(turns: parsed.turns, chunkIndex: index)
+            )
+            completedChunks.append((offset: range.start, result: remapped))
+        }
+
+        return DiarizationChunkMerger.merge(chunks: completedChunks)
+    }
+
+    /// Builds the speaker clips sent with later chunks. Clips that fail to encode are skipped.
+    private static func knownSpeakers(from turns: [DiarizedTurn], sourceURL: URL) -> [KnownSpeaker] {
+        DiarizationReferenceSelector.select(from: turns).compactMap { reference in
+            guard let clip = try? DiarizationAudioEncoder.encodeReferenceClip(
+                source: sourceURL,
+                start: reference.start,
+                duration: reference.duration
+            ) else {
+                return nil
+            }
+            return KnownSpeaker(
+                name: "\(DiarizationChunkMerger.knownSpeakerPrefix)\(reference.speakerKey)",
+                referenceDataURI: "data:audio/wav;base64,\(clip.base64EncodedString())"
+            )
         }
     }
 
-    private func diarizeWithOpenAI(audioURL: URL, operationID: String, audioSessionID: String, completion: @escaping (Result<DiarizationResult, Error>) -> Void) {
+    /// Retries one chunk with the same operation ID and byte-identical request, so the server can replay its cached result.
+    private func diarizeChunkWithRetry(
+        fileURL: URL,
+        chunkIndex: Int,
+        startTime: TimeInterval,
+        operationID: String,
+        audioSessionID: String,
+        knownSpeakers: [KnownSpeaker]
+    ) async throws -> DiarizationResult {
+        var retryCount = 0
+        while true {
+            do {
+                return try await diarizeChunk(
+                    fileURL: fileURL,
+                    chunkIndex: chunkIndex,
+                    startTime: startTime,
+                    operationID: operationID,
+                    audioSessionID: audioSessionID,
+                    knownSpeakers: knownSpeakers
+                )
+            } catch {
+                guard isRetryable(error), retryCount < maxRetries else {
+                    throw error
+                }
+                let base = TimeInterval(pow(2.0, Double(retryCount)))
+                let jitter = Double.random(in: 0...0.5)
+                let delay = min(30.0, base + jitter)
+                retryCount += 1
+                try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            }
+        }
+    }
+
+    private func diarizeChunk(
+        fileURL: URL,
+        chunkIndex: Int,
+        startTime: TimeInterval,
+        operationID: String,
+        audioSessionID: String,
+        knownSpeakers: [KnownSpeaker]
+    ) async throws -> DiarizationResult {
         guard OpenAIConfiguration.isConfigured else {
-            completion(.failure(TranscriptionError.apiKeyNotConfigured))
-            return
+            throw TranscriptionError.apiKeyNotConfigured
+        }
+
+        guard let fileData = try? Data(contentsOf: fileURL), !fileData.isEmpty else {
+            throw TranscriptionError.invalidResponse
         }
 
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
         let boundary = "Boundary-\(UUID().uuidString)"
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 120
+        request.timeoutInterval = 300
 
         var body = Data()
         func appendField(name: String, value: String) {
@@ -321,15 +422,9 @@ class TranscriptionService {
             body.append("\(value)\r\n")
         }
 
-        let filename = audioURL.lastPathComponent
-        guard let fileData = try? Data(contentsOf: audioURL), !fileData.isEmpty else {
-            completion(.failure(TranscriptionError.invalidResponse))
-            return
-        }
-
         body.append("--\(boundary)\r\n")
-        body.append("Content-Disposition: form-data; name=\"file\"; filename=\"\(filename)\"\r\n")
-        body.append("Content-Type: audio/wav\r\n\r\n")
+        body.append("Content-Disposition: form-data; name=\"file\"; filename=\"chunk-\(chunkIndex).m4a\"\r\n")
+        body.append("Content-Type: audio/mp4\r\n\r\n")
         body.append(fileData)
         body.append("\r\n")
         appendField(name: "model", value: OpenAIConfiguration.diarizationModel)
@@ -341,38 +436,40 @@ class TranscriptionService {
             appendField(name: "language", value: language)
         }
 
+        for speaker in knownSpeakers {
+            appendField(name: "known_speaker_names[]", value: speaker.name)
+            appendField(name: "known_speaker_references[]", value: speaker.referenceDataURI)
+        }
+
         body.append("--\(boundary)--\r\n")
         request.httpBody = body
         request.setValue(operationID, forHTTPHeaderField: "X-Usage-Operation-ID")
         request.setValue("diarization", forHTTPHeaderField: "X-Usage-Operation-Type")
         request.setValue(audioSessionID, forHTTPHeaderField: "X-Audio-Session-ID")
-        request.setValue("0", forHTTPHeaderField: "X-Audio-Start-MS")
+        request.setValue(String(Int(round(startTime * 1000))), forHTTPHeaderField: "X-Audio-Start-MS")
 
         let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 120
-        config.timeoutIntervalForResource = 300
+        config.timeoutIntervalForRequest = 300
+        config.timeoutIntervalForResource = 600
         let session = URLSession(configuration: config)
+        defer { session.finishTasksAndInvalidate() }
 
-        Task {
-            do {
-                var authorizedRequest = request
-                authorizedRequest.setValue(try await UsageAccessManager.shared.authorizationHeader(), forHTTPHeaderField: "Authorization")
-                let (data, response) = try await session.data(for: authorizedRequest)
-                if let httpResponse = response as? HTTPURLResponse,
-                   let error = Self.responseError(forStatus: httpResponse.statusCode, body: data) {
-                    if httpResponse.statusCode == 401 || httpResponse.statusCode == 403 {
-                        await UsageAccessManager.shared.invalidateSession()
-                    }
-                    completion(.failure(error))
-                    return
-                }
-                let parsed = try Self.parseDiarizedJSON(data)
-                let merged = Self.mergeAdjacentTurns(parsed.turns)
-                completion(.success(DiarizationResult(duration: parsed.duration, text: parsed.text, turns: merged)))
-            } catch {
-                completion(.failure(error))
+        var authorizedRequest = request
+        authorizedRequest.setValue(try await UsageAccessManager.shared.authorizationHeader(), forHTTPHeaderField: "Authorization")
+        let (data, response) = try await session.data(for: authorizedRequest)
+        if let httpResponse = response as? HTTPURLResponse,
+           let error = Self.responseError(forStatus: httpResponse.statusCode, body: data) {
+            if httpResponse.statusCode == 401 || httpResponse.statusCode == 403 {
+                await UsageAccessManager.shared.invalidateSession()
             }
+            throw error
         }
+        let parsed = try Self.parseDiarizedJSON(data)
+        return DiarizationResult(
+            duration: parsed.duration,
+            text: parsed.text,
+            turns: Self.mergeAdjacentTurns(parsed.turns)
+        )
     }
 }
 
