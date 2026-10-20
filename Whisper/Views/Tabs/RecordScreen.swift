@@ -187,7 +187,15 @@ struct RecordScreen: View {
                 }
                 .buttonStyle(.plain)
             } else {
-                BannerView(icon: "lock", title: "Saved audio is waiting", subtitle: "It transcribes automatically once your subscription is verified.", color: .orange)
+                BannerView(
+                    icon: "lock",
+                    title: "Saved audio is waiting",
+                    subtitle: [
+                        "It transcribes automatically once your subscription is verified.",
+                        usageAccess.lastAccessDetail.map { "Verification failed (\($0)). Retrying." }
+                    ].compactMap { $0 }.joined(separator: " "),
+                    color: .orange
+                )
             }
         }
         if let error = viewModel.errorMessage, !error.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {

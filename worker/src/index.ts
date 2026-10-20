@@ -141,7 +141,7 @@ async function verifyTransaction(signedTransaction: string): Promise<VerifiedTra
 }
 
 async function createUsageSession(request: Request, env: Env): Promise<Response> {
-  if (!env.USAGE_SESSION_SECRET || !env.REVENUECAT_SECRET_API_KEY) return jsonError("Subscription verification is not configured.", 503);
+  if (!env.USAGE_SESSION_SECRET || !env.REVENUECAT_SECRET_API_KEY) return jsonError("Subscription verification is not configured on this server.", 503, "not_configured");
   let payload: unknown;
   try {
     payload = await request.json();
@@ -184,7 +184,7 @@ async function createUsageSession(request: Request, env: Env): Promise<Response>
 }
 
 async function createDemoSession(request: Request, env: Env): Promise<Response> {
-  if (!env.USAGE_SESSION_SECRET) return jsonError("Usage service is not configured.", 503);
+  if (!env.USAGE_SESSION_SECRET) return jsonError("Usage service is not configured.", 503, "not_configured");
   let payload: unknown;
   try { payload = await request.json(); } catch { return jsonError("Invalid request.", 400); }
   const demoID = (payload as { demoID?: unknown })?.demoID;
@@ -200,7 +200,7 @@ async function createDemoSession(request: Request, env: Env): Promise<Response> 
 }
 
 async function authorizedUsage(request: Request, env: Env): Promise<{ stub: DurableObjectStub<TrialUsageGateway>; claims: AccessClaims } | Response> {
-  if (!env.USAGE_SESSION_SECRET) return jsonError("Usage service is not configured.", 503);
+  if (!env.USAGE_SESSION_SECRET) return jsonError("Usage service is not configured.", 503, "not_configured");
   const authorization = request.headers.get("Authorization") ?? "";
   if (!authorization.startsWith("Bearer ")) return jsonError("Update Revera to continue processing audio.", 426);
   const claims = await verifyAccessToken(authorization.slice(7), env.USAGE_SESSION_SECRET);

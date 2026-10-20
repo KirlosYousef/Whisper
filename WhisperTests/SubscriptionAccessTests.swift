@@ -111,7 +111,7 @@ final class SubscriptionAccessTests: XCTestCase {
     }
 
     func testUnverifiedAccessRecordsSegmentsSoNothingIsLost() {
-        XCTAssertEqual(decide(.unverified), .start(.segments20s, notice: .realtimeUnavailable))
+        XCTAssertEqual(decide(.unverified), .start(.segments20s, notice: .subscriptionUnverified))
         XCTAssertEqual(decide(.unverified, online: false), .start(.segments20s, notice: .offline))
         XCTAssertEqual(decide(.unverified, .segments20s), .start(.segments20s, notice: nil))
     }
