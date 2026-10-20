@@ -128,11 +128,14 @@ enum AccessGate: Equatable {
 enum RecordingStartNotice: Equatable {
     case offline
     case realtimeUnavailable
+    /// Access is not confirmed yet (the subscription check is failing or still running).
+    case subscriptionUnverified
 
     var message: String {
         switch self {
         case .offline: "You’re offline. Recording in 20-second segments; they transcribe when you’re back online."
         case .realtimeUnavailable: "Live captions are unavailable right now. Recording in 20-second segments instead."
+        case .subscriptionUnverified: "Your subscription isn’t verified yet, so live captions are off. Recording in 20-second segments; they transcribe once it’s verified."
         }
     }
 }
@@ -170,7 +173,7 @@ enum RecordingStartPolicy {
 
     private static func notice(for requestedMode: TranscriptionMode, isOnline: Bool) -> RecordingStartNotice? {
         guard requestedMode == .realtimeOpenAI else { return nil }
-        return isOnline ? .realtimeUnavailable : .offline
+        return isOnline ? .subscriptionUnverified : .offline
     }
 }
 

@@ -86,6 +86,9 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
     private var realtimeConnectContinuation: CheckedContinuation<RealtimeConnectResult, Never>?
     /// Changes when a start is cancelled, so a start still waiting on access, permission or connect stops there.
     private var startAttemptID = UUID()
+    /// Why the latest realtime connection attempt failed, for the "live captions unavailable" note.
+    private var lastRealtimeConnectIssue: String?
+    private var realtimeFailureDetail: String?
     /// The trial ran out while this realtime session was streaming; the rest of the audio waits for an upgrade.
     private var realtimeUsageExhaustedDuringSession = false
     private var inFlightSegmentTranscriptions: Set<UUID> = []
@@ -245,8 +248,9 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
             realtimeStatusText = "Realtime transcription is live"
             clearErrorMessage()
             AnalyticsService.shared.trackEvent("Realtime Transcription Connected", properties: nil)
-        case .reconnecting(let attempt):
-            // While starting, the connect timeout decides; reconnects are not shown yet.
+        case .reconnecting(let attempt, let reason):
+            // While starting, the connect timeout decides; remember why so a timeout can say.
+            lastRealtimeConnectIssue = reason
             guard isRecording else { return }
             isRealtimeConnected = false
             realtimeStatusText = "Reconnecting live captions…"
@@ -534,6 +538,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                 realtimeTranscriptionService.disconnect()
                 mode = .segments20s
                 notice = .realtimeUnavailable
+                realtimeFailureDetail = reason
                 AnalyticsService.shared.trackEvent("Realtime Transcription Failed", properties: [
                     "error": reason,
                     "during_prepare": true
@@ -544,7 +549,9 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         if mode == .segments20s {
             hidesSegmentRowsDuringRealtime = false
         }
-        realtimeStatusText = notice?.message
+        realtimeStatusText = notice.map { note in
+            realtimeFailureDetail.map { "\(note.message) (\($0))" } ?? note.message
+        }
 
         // Step 4: audio capture.
         return await beginAudioCapture(attempt: attempt)
@@ -566,6 +573,8 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         activeAudioSessionID = UUID().uuidString
         isTrialUsageExhausted = false
         realtimeUsageExhaustedDuringSession = false
+        lastRealtimeConnectIssue = nil
+        realtimeFailureDetail = nil
         activeTranscriptionMode = .segments20s
         resetLiveTranscript()
         clearErrorMessage()
@@ -581,7 +590,7 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
                 audioSessionID: activeAudioSessionID
             )
             let timeout = DispatchWorkItem { [weak self] in
-                self?.resolveRealtimeConnect(.unavailable("connect_timeout"))
+                self?.resolveRealtimeConnect(.unavailable(self?.lastRealtimeConnectIssue ?? "no answer within 10 seconds"))
             }
             realtimePrepareTimeoutWorkItem = timeout
             DispatchQueue.main.asyncAfter(deadline: .now() + 10.0, execute: timeout)

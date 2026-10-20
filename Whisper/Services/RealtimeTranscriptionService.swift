@@ -3,7 +3,8 @@ import Foundation
 
 enum RealtimeTranscriptionEvent {
     case connected
-    case reconnecting(Int)
+    /// A connection attempt failed and another is scheduled; `reason` is why (for example "HTTP 502").
+    case reconnecting(Int, reason: String)
     case delta(itemID: String, text: String)
     case completed(itemID: String, transcript: String)
     /// The trial minutes ran out (refused at connect, or the Worker closed the stream with 4409).
@@ -228,7 +229,7 @@ final class RealtimeTranscriptionService {
         isReconnectScheduled = true
         reconnectAttempts += 1
         let attempt = reconnectAttempts
-        emit(.reconnecting(attempt))
+        emit(.reconnecting(attempt, reason: message))
         let delay = min(8.0, pow(2.0, Double(attempt - 1)) * 0.5)
         queue.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self, self.isReconnectScheduled else { return }
@@ -242,6 +243,7 @@ final class RealtimeTranscriptionService {
         let status = (task.response as? HTTPURLResponse)?.statusCode
         let closeCode = task.closeCode == .invalid ? nil : task.closeCode.rawValue
         let failure = RealtimeConnectionFailure.classify(httpStatus: status, closeCode: closeCode)
+        let message = status.map { "HTTP \($0)" } ?? message
         // After `finish()` only a usage or subscription close matters; a plain close is the normal end.
         if isFinishing, !failure.isTerminal { return }
         handleFailure(failure, message: message)
