@@ -378,8 +378,11 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
             return true
         }
         switch recording.speakerStatus {
-        case .pending, .processing:
+        case .processing:
             return true
+        case .pending:
+            // Waiting for access or a connection is not progress; show the saved transcript state instead.
+            return isOnline && MainActor.assumeIsolated { UsageAccessManager.shared.accessState.canTranscribe }
         default:
             return false
         }
@@ -1324,8 +1327,8 @@ class RecordingViewModel: ObservableObject, AudioServiceDelegate {
         }
 
         // Uploading the recording would only be refused; it runs once Unlimited is active.
-        let trialExhausted = MainActor.assumeIsolated { UsageAccessManager.shared.accessState.isTrialExhausted }
-        guard isOnline, !trialExhausted else {
+        let canTranscribe = MainActor.assumeIsolated { UsageAccessManager.shared.accessState.canTranscribe }
+        guard isOnline, canTranscribe else {
             recording.speakerStatus = .pending
             try? modelContext.save()
             fetchRecordings()

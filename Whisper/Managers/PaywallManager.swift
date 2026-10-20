@@ -263,6 +263,8 @@ final class UsageAccessManager: ObservableObject {
     @Published private(set) var snapshot: UsageAccessSnapshot?
     @Published private(set) var shouldShowFiveMinuteWarning = false
     @Published private(set) var lastAccessError: UsageAccessError?
+    /// The Worker's own explanation of the last failed verification, shown so a stuck state is diagnosable.
+    @Published private(set) var lastAccessDetail: String?
     /// Set while an Unlimited plan change is queued to start when the current trial ends.
     @Published private(set) var scheduledUnlimitedStart: Date?
     @Published private(set) var isConfirmingPurchase = false
@@ -277,6 +279,9 @@ final class UsageAccessManager: ObservableObject {
     /// Bumped whenever the cached token is thrown away, so a session request that started earlier cannot restore it.
     private var sessionGeneration = 0
     private var refreshTask: Task<Void, Never>?
+    /// Failed verifications back off 15s, 30s, 60s, then every 2 minutes, so a broken server isn't hammered.
+    private var verificationFailures = 0
+    private var nextVerificationRetry = Date.distantPast
 
     private struct SessionResponse: Decodable {
         let token: String
@@ -352,6 +357,10 @@ final class UsageAccessManager: ObservableObject {
                 sessionTask = nil
                 if let accessError = error as? UsageAccessError {
                     lastAccessError = accessError
+                    if accessError == .verificationPending {
+                        verificationFailures += 1
+                        nextVerificationRetry = Date().addingTimeInterval(min(120, 15 * pow(2, Double(verificationFailures - 1))))
+                    }
                     // Only a definitive answer clears the snapshot; transient failures keep the last known state.
                     if accessError == .noVerifiedSubscription || accessError == .updateRequired {
                         snapshot = nil
@@ -390,8 +399,13 @@ final class UsageAccessManager: ObservableObject {
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw UsageAccessError.verificationPending }
         guard (200..<300).contains(http.statusCode) else {
+            let message = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["error"] as? String
+            lastAccessDetail = "\(http.statusCode)\(message.map { ": \($0)" } ?? "")"
             throw UsageAccessError.forSessionStatus(http.statusCode)
         }
+        lastAccessDetail = nil
+        verificationFailures = 0
+        nextVerificationRetry = .distantPast
         return try JSONDecoder().decode(SessionResponse.self, from: data)
     }
 
@@ -436,8 +450,13 @@ final class UsageAccessManager: ObservableObject {
 
     /// Re-reads usage with the cached token; used while the Record screen is open.
     func refreshUsageSnapshot() async {
-        // Without a snapshot there is no verified subscription to poll; `refresh` handles that case.
-        guard snapshot != nil else { return }
+        guard snapshot != nil else {
+            // Never verified, or verification failed: try again on the backoff schedule so it recovers by itself.
+            if lastAccessError == .verificationPending, Date() >= nextVerificationRetry {
+                await refresh()
+            }
+            return
+        }
         do {
             try await fetchUsageState()
         } catch {
